@@ -1,0 +1,105 @@
+"""프로젝트 설정(project.toml) 로딩."""
+
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+DEFAULT_ERROR_PATTERNS = [
+    "Error:",
+    "Divergence detected",
+    "floating point exception",
+]
+
+
+class ConfigError(ValueError):
+    pass
+
+
+@dataclass
+class SolverConfig:
+    kind: str = "fluent"  # "fluent" 또는 "custom"
+    executable: str | None = None  # 비우면 AWP_ROOTxxx 환경변수로 자동 탐색
+    mode: str = "3ddp"  # Fluent: 2d, 2ddp, 3d, 3ddp
+    processes: int = 4
+    gui: bool = False
+    extra_args: list[str] = field(default_factory=list)
+    command: list[str] | None = None  # kind="custom"일 때 명령어 템플릿
+    timeout_minutes: float | None = None
+
+
+@dataclass
+class ResultsConfig:
+    report_files: list[str] = field(default_factory=lambda: ["*.out"])
+    average_last: int = 1  # 마지막 N개 반복의 평균을 결과값으로 사용
+    error_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_ERROR_PATTERNS))
+    summary_file: str = "summary.csv"
+
+
+@dataclass
+class ProjectConfig:
+    path: Path
+    name: str
+    template: Path
+    output_dir: Path
+    case_name: str
+    group: str | None
+    cases_csv: Path | None
+    sweep: dict[str, list]
+    constants: dict
+    derived: dict[str, str]
+    max_parallel: int
+    solver: SolverConfig
+    results: ResultsConfig
+
+    @property
+    def root(self) -> Path:
+        return self.path.parent
+
+
+def load_config(path: str | Path) -> ProjectConfig:
+    path = Path(path).resolve()
+    if not path.is_file():
+        raise ConfigError(f"설정 파일을 찾을 수 없습니다: {path}")
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+
+    root = path.parent
+    project = data.get("project", {})
+    cases = data.get("cases", {})
+
+    if "template" not in project:
+        raise ConfigError("[project] template (저널 템플릿 경로)을 지정해야 합니다.")
+
+    solver = SolverConfig(**data.get("solver", {}))
+    if solver.kind not in ("fluent", "custom"):
+        raise ConfigError(f"[solver] kind는 'fluent' 또는 'custom'이어야 합니다: {solver.kind!r}")
+    if solver.kind == "custom" and not solver.command:
+        raise ConfigError("[solver] kind='custom'이면 command를 지정해야 합니다.")
+
+    results = ResultsConfig(**data.get("results", {}))
+
+    cases_csv = cases.get("csv")
+    sweep = cases.get("sweep", {})
+    if not cases_csv and not sweep:
+        raise ConfigError("[cases] csv 또는 [cases.sweep] 중 하나는 지정해야 합니다.")
+    for key, values in sweep.items():
+        if not isinstance(values, list) or not values:
+            raise ConfigError(f"[cases.sweep] {key}는 값 목록이어야 합니다.")
+
+    return ProjectConfig(
+        path=path,
+        name=project.get("name", root.name),
+        template=(root / project["template"]).resolve(),
+        output_dir=(root / project.get("output_dir", "runs")).resolve(),
+        case_name=cases.get("name", ""),
+        group=cases.get("group"),
+        cases_csv=(root / cases_csv).resolve() if cases_csv else None,
+        sweep=sweep,
+        constants=data.get("constants", {}),
+        derived=data.get("derived", {}),
+        max_parallel=int(project.get("max_parallel", 1)),
+        solver=solver,
+        results=results,
+    )

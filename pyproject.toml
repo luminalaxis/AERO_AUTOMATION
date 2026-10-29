@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aero-automation"
+version = "0.1.0"
+description = "ANSYS(Fluent) 해석 케이스 분류·배치 실행 자동화"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+aero-auto = "aero_automation.cli:main"
+
+[tool.setuptools]
+packages = ["aero_automation"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
