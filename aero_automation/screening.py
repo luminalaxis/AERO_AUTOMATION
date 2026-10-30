@@ -18,6 +18,7 @@ import json
 import math
 import shutil
 from fnmatch import fnmatch
+import multiprocessing as mp
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field, fields, replace
@@ -32,6 +33,7 @@ from .geometry import geometry_params
 from .meshing import mesh_name
 from .panel import analyze, solve_inviscid
 
+_BLAS_THREAD_VARS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
 SCREEN_DIR = "screening"
 SELECTION_FILE = "selection.json"
 
@@ -201,12 +203,23 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
     args = [(_geometry_params(groups[items[0][0]][0]), cfg.root, items, sc, x_param) for items in tasks.values()]
     done = 0
     if workers > 1 and len(args) > 1:
-        with ProcessPoolExecutor(max_workers=workers) as pool:
-            for fut in as_completed([pool.submit(_evaluate_task, *a) for a in args]):
-                results.update(fut.result())
-                done += 1
-                if done % 25 == 0 or done == len(args):
-                    log(f"  저충실도 해석 {done}/{len(args)} 형상 ({workers}개 프로세스)")
+        # 작업 프로세스마다 행렬 계산(BLAS) 스레드를 1개로 제한: 그대로 두면 프로세스 수 × 코어 수만큼
+        # 스레드가 경합해 수십 배 느려진다. spawn으로 새로 띄워야 환경변수가 numpy 로드 전에 적용된다.
+        saved = {k: os.environ.get(k) for k in _BLAS_THREAD_VARS}
+        os.environ.update({k: "1" for k in _BLAS_THREAD_VARS})
+        try:
+            with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as pool:
+                for fut in as_completed([pool.submit(_evaluate_task, *a) for a in args]):
+                    results.update(fut.result())
+                    done += 1
+                    if done % 25 == 0 or done == len(args):
+                        log(f"  저충실도 해석 {done}/{len(args)} 형상 ({workers}개 프로세스)")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
     else:
         for a in args:
             results.update(_evaluate_task(*a))
