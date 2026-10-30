@@ -9,6 +9,8 @@
   - flapN_deflection             : 메인 코드선 기준 절대각 [deg], 뒷전이 내려가는 방향이 +
   - flapN_overlap                : 앞 요소 뒷전 x - 플랩 앞쪽 끝 x. +면 플랩이 앞 요소 아래로 들어감
   - flapN_gap                    : 앞 요소 뒷전(아랫면 끝점)에서 플랩 표면까지의 최소 거리
+  - downforce                    : true면 다운포스용으로 전체 형상을 위아래로 뒤집는다 (거울상).
+                                   플랩은 앞 요소 뒷전의 위쪽에 놓이고 갭/오버랩/각도 정의는 거울상 그대로.
 """
 
 from __future__ import annotations
@@ -181,7 +183,7 @@ FLAP_FIELDS = ("airfoil", "chord", "deflection", "gap", "overlap")
 
 def geometry_params(params: dict) -> dict:
     """케이스 변수 중 형상(메쉬)을 결정하는 것만 추린다."""
-    keys = ["main_airfoil", "main_chord", "chord"]
+    keys = ["main_airfoil", "main_chord", "chord", "downforce"]
     keys += [f"flap{i}_{f}" for i in range(1, MAX_FLAPS + 1) for f in FLAP_FIELDS]
     return {k: params[k] for k in keys if k in params and params[k] not in ("", None)}
 
@@ -255,7 +257,16 @@ def build_geometry(params: dict, root: Path) -> Geometry:
                       "deflection": delta, "gap": gap, "overlap": overlap,
                       "clearance": clearance * ref,  # 앞선 요소들과의 실제 최소 간격 (입력 단위)
                       "clearance_c": clearance})     # 메인 코드 기준
-    info = {"elements": len(elements), "main_chord": ref, "flaps": flaps}
+    info = {"elements": len(elements), "main_chord": ref, "flaps": flaps,
+            "downforce": bool(params.get("downforce"))}
     if flaps:
         info["min_clearance"] = min(f["clearance_c"] for f in flaps)
+    if info["downforce"]:
+        elements = [mirror(el) for el in elements]
     return Geometry(elements, info)
+
+
+def mirror(el: Element) -> Element:
+    """x축 기준 위아래 뒤집기. 점 순서를 뒤집어 Selig 순서(반시계, 위쪽 면 먼저)를 유지한다."""
+    xy = (el.xy * (1.0, -1.0))[::-1].copy()
+    return Element(el.name, xy, len(xy) - 1 - el.le_index)

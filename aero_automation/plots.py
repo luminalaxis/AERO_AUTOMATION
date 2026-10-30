@@ -47,10 +47,14 @@ def plot_mesh(nodes: np.ndarray, cells: list, geom, out_dir: Path, title: str = 
     allxy = np.vstack([el.xy for el in geom.elements])
     (x0, y0), (x1, y1) = allxy.min(0), allxy.max(0)
     views = [("mesh.png", (x0 - 0.3, x1 + 0.6), (y0 - 0.35, y1 + 0.35))]
+    inverted = geom.info.get("downforce", False)
     for i, flap in enumerate(geom.info.get("flaps", []), start=1):
-        te = geom.elements[i - 1].te_lower
+        prev = geom.elements[i - 1]
+        # 슬롯은 앞 요소 뒷전의 아래쪽(다운포스 형상이면 위쪽)
+        te = prev.te_upper if inverted else prev.te_lower
         r = max(0.04, 6 * flap["clearance_c"])
-        views.append((f"mesh_slot{i}.png", (te[0] - r, te[0] + r), (te[1] - r, te[1] + 0.6 * r)))
+        ylim = (te[1] - 0.6 * r, te[1] + r) if inverted else (te[1] - r, te[1] + 0.6 * r)
+        views.append((f"mesh_slot{i}.png", (te[0] - r, te[0] + r), ylim))
     views.append(("mesh_le.png", (-0.03, 0.05), (-0.035, 0.035)))
 
     polys = [nodes[list(c)] for c in cells]
@@ -100,7 +104,8 @@ def plot_convergence(report_files: list[Path], path: Path, title: str = "") -> P
     return _save(fig, path)
 
 
-def plot_summary(rows: list[dict], out_dir: Path, x_param: str, group_keys: list[str]) -> list[Path]:
+def plot_summary(rows: list[dict], out_dir: Path, x_param: str, group_keys: list[str],
+                 cl_label: str = "Cl") -> list[Path]:
     """형상별 Cl-α, Cd-α, L/D-α, 극곡선(Cl-Cd)."""
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -118,10 +123,10 @@ def plot_summary(rows: list[dict], out_dir: Path, x_param: str, group_keys: list
         return fig, ax
 
     specs = [
-        ("cl_alpha.png", "Cl", lambda r: (r[x_param], r["cl"])),
+        ("cl_alpha.png", cl_label, lambda r: (r[x_param], r["cl"])),
         ("cd_alpha.png", "Cd", lambda r: (r[x_param], r.get("cd"))),
         ("ld_alpha.png", "L/D", lambda r: (r[x_param], r.get("l/d"))),
-        ("polar.png", "Cl", lambda r: (r.get("cd"), r["cl"])),
+        ("polar.png", cl_label, lambda r: (r.get("cd"), r["cl"])),
     ]
     saved = []
     for fname, ylabel, xy in specs:

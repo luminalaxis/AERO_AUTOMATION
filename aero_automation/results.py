@@ -63,17 +63,19 @@ def _wind_axes(row: dict, aoa_key: str) -> None:
     리포트 이름이 cx/cy 로 시작하면 같은 접미사끼리 짝을 짓는다 (예: cx-flap, cy-flap → cl-flap, cd-flap).
     받음각이 바뀌어도 Fluent 쪽 force vector를 매번 바꿀 필요가 없다.
     """
-    aoa = row.get(aoa_key)
-    if not isinstance(aoa, (int, float)):
+    # 실제 유입 각도 (다운포스 날개는 flow_angle = -aoa). 다운포스면 cl 부호를 바꿔 아래 방향을 +로.
+    angle = row.get("flow_angle", row.get(aoa_key))
+    if not isinstance(angle, (int, float)):
         return
-    a = math.radians(aoa)
+    a = math.radians(angle)
+    sign = -1.0 if row.get("downforce") else 1.0
     for key in [k for k in row if k.lower().startswith("cx")]:
         suffix = key[2:]
         ky = next((k for k in row if k.lower() == "cy" + suffix.lower()), None)
         cx, cy = row[key], row.get(ky)
         if ky is None or not isinstance(cx, float) or not isinstance(cy, float):
             continue
-        row["cl" + suffix] = cy * math.cos(a) - cx * math.sin(a)
+        row["cl" + suffix] = sign * (cy * math.cos(a) - cx * math.sin(a))
         row["cd" + suffix] = cx * math.cos(a) + cy * math.sin(a)
 
 
@@ -110,7 +112,8 @@ def _forces_per_span(row: dict) -> None:
         return
     rho = row.get("density", 1.225)
     q = 0.5 * rho * v**2
-    for coef, name in (("cl", "lift_N_per_m"), ("cd", "drag_N_per_m")):
+    lift_name = "downforce_N_per_m" if row.get("downforce") else "lift_N_per_m"
+    for coef, name in (("cl", lift_name), ("cd", "drag_N_per_m")):
         if isinstance(row.get(coef), float):
             row[name] = q * c * row[coef]
 
@@ -194,13 +197,14 @@ def collect(cfg: ProjectConfig, cases: list[Case], plots: bool = True) -> dict:
             if files:
                 plot_convergence(files, case.dir / "convergence.png", title=case.name)
         geo_keys = [k for k in keys if k not in split_by]
+        cl_label = "Cl (downforce +)" if any(r.get("downforce") for r in rows) else "Cl"
         if split_by:
             # 조건(속도 등)별 폴더에 그래프를 따로 저장
             conds = sorted({tuple(r.get(k) for k in split_by) for r in rows})
             for cond in conds:
                 sub = [r for r in rows if tuple(r.get(k) for k in split_by) == cond]
                 label = safe_name(", ".join(f"{k}={v}" for k, v in zip(split_by, cond)))
-                result["plots"] += plot_summary(sub, out_dir / "plots" / label, cfg.results.x_param, geo_keys)
+                result["plots"] += plot_summary(sub, out_dir / "plots" / label, cfg.results.x_param, geo_keys, cl_label)
             if len(split_by) == 1 and ranking:
                 from .plots import plot_condition_trend
                 path = plot_condition_trend(ranking, split_by[0], geo_keys, cfg.results.objective,
@@ -208,7 +212,7 @@ def collect(cfg: ProjectConfig, cases: list[Case], plots: bool = True) -> dict:
                 if path:
                     result["plots"].append(path)
         else:
-            result["plots"] = plot_summary(rows, out_dir / "plots", cfg.results.x_param, geo_keys)
+            result["plots"] = plot_summary(rows, out_dir / "plots", cfg.results.x_param, geo_keys, cl_label)
         result["plots"] += _screening_comparison(rows, out_dir)
     return result
 

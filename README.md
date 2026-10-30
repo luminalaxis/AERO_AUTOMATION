@@ -2,7 +2,7 @@
 
 아 귀찮은 케이스 분류 해석 자동화 할겁니다
 
-2D **다요소 날개(메인 + 슬롯 플랩 1~2개)** 형상 최적화를 위한 ANSYS Fluent 배치 해석 자동화 도구입니다.
+2D **다요소 날개(메인 + 슬롯 플랩 1~2개)** 형상 최적화를 위한 ANSYS Fluent 배치 해석 자동화 도구입니다. 예제는 **다운포스용 뒤집힌 날개**입니다.
 2단(메인 + 플랩 1개)·3단(메인 + 플랩 2개) 구성의 형상(익형, 요소별 코드 길이, 플랩 각도, 갭, 오버랩) × 받음각 × 속도 케이스를 만들고, **저충실도 해석으로 가망 없는 케이스를 미리 걸러낸 뒤**, 형상마다 메쉬를 자동 생성해 Fluent로 돌리고 Cl/Cd 정리, 형상 순위, 이미지 저장까지 한 번에 처리합니다.
 
 ```
@@ -82,6 +82,15 @@ aero-auto collect          # 결과 다시 정리 (summary, ranking, 그래프)
 | `flapN_gap` | 앞 요소(메인 또는 flap{N-1}) 뒷전(아랫면 끝점) ~ 플랩 표면 최소 거리 [mm] |
 | `flapN_overlap` | 앞 요소 뒷전 x − 플랩 앞쪽 끝 x [mm]. +면 플랩이 앞 요소 아래로 들어감 |
 | `chord` | 메인 코드 [m]. 메쉬 스케일, Re, 계수 기준 길이에 쓰임. 예제는 `[derived]`에서 `main_chord / 1000`으로 계산 |
+| `downforce` | `true`면 다운포스용 뒤집힌 날개 (아래 참고) |
+
+### 다운포스 날개 (`downforce = true`)
+
+- 전체 형상(메인 + 플랩)을 위아래로 뒤집습니다. 플랩은 앞 요소 뒷전의 **위쪽**에 놓이고, 갭·오버랩·플랩 각도 정의는 거울상 그대로입니다. 메쉬 이름 끝에 `_inv`가 붙습니다.
+- **받음각 `aoa`는 다운포스가 커지는 방향이 +**입니다. Fluent에 넣는 실제 유입 각도는 `flow_angle = -aoa`로 자동 계산되고, 저널은 `${flow_angle}`을 씁니다.
+- 결과의 `cl`은 **다운포스 계수(아래 방향 +)**, `l/d`는 다운포스/항력, 힘은 `downforce_N_per_m`입니다. 요소별(`cl-main`, `cl-flap1` 등)도 같은 부호입니다.
+- 스크리닝은 자유류 조건이라 뒤집힌 날개가 똑바른 날개의 정확한 거울상입니다. 그래서 똑바른 형상을 같은 받음각으로 풀어 그 양력을 다운포스로 씁니다.
+- 지면 효과(지면과 가까운 프런트 윙 등)는 아직 넣지 않았습니다. 지금은 자유류(지면 없음) 해석입니다.
 
 주어진 overlap에서 gap이 정확히 맞도록 플랩 높이를 자동으로 계산하고, 요소끼리 겹치거나 불가능한 조합이면 해당 형상만 실패 처리합니다. 앞선 모든 요소와의 실제 최소 간격은 `mesh_info.json`의 `flaps[].clearance`에 기록합니다.
 
@@ -142,7 +151,7 @@ split_by = ["speed_kmh"]     # 속도별로 순위·그래프·스크리닝 선�
 
 - Re는 입력값이 아니라 속도와 코드 길이로 정해지는 결과입니다(Re = ρVc/μ).
 - **메쉬:** 형상(모든 요소의 코드·각도·갭 포함)별로 하나만 만들고 속도·받음각과는 공유합니다. 첫 셀 높이는 그 메쉬를 쓰는 케이스 중 가장 높은 Re 기준이라 모든 속도에서 y+ ≤ 목표입니다.
-- **계수와 힘:** Cl, Cd, L/D는 메인 코드로 무차원화됩니다. 메인 코드나 구성(2단/3단)이 다른 형상끼리 실제 힘을 비교하려면 `summary.csv`의 `lift_N_per_m`, `drag_N_per_m`(단위 폭 1 m당 힘 = ½ρV²·c·Cl)을 보세요.
+- **계수와 힘:** Cl, Cd, L/D는 메인 코드로 무차원화됩니다. 메인 코드나 구성(2단/3단)이 다른 형상끼리 실제 힘을 비교하려면 `summary.csv`의 `downforce_N_per_m`(똑바른 날개면 `lift_N_per_m`), `drag_N_per_m`(단위 폭 1 m당 힘 = ½ρV²·c·Cl)을 보세요.
 - **Fluent:** 저널이 케이스마다 `mach` Named Expression과 기준 속도·길이·면적을 갱신합니다. 기준 속도를 갱신하지 않으면 계수가 베이스 케이스 속도 기준으로 잘못 계산됩니다.
 - **`split_by`:** 스크리닝 선별, `ranking.csv` 순위, 그래프를 속도별로 따로 만듭니다. 어떤 형상이 특정 속도에서만 좋아도 그 속도에서는 살아남습니다. `plots/by_speed_kmh.png`는 상위 형상의 최대 L/D가 속도에 따라 어떻게 변하는지 보여줍니다.
 
@@ -221,9 +230,9 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 2. `Mesh > Check`가 통과하는지 확인합니다. 단위는 m입니다.
 3. **Models**: Viscous → Transition SST (Re 수십만 대역 권장. 층류 박리 기포와 천이를 잡음) 또는 k-omega SST(완전 난류)
 4. **Materials**: air, Density = **ideal-gas**. pressure-far-field 경계조건은 ideal-gas가 필요합니다.
-5. **Named Expressions**: `aoa` = `0 [deg]`, `mach` = `0.08` (값은 저널이 케이스마다 바꿈)
+5. **Named Expressions**: `flow_angle` = `0 [deg]`, `mach` = `0.08` (값은 저널이 케이스마다 바꿈. `flow_angle`은 실제 유입 각도로, 다운포스 날개는 `-aoa`가 들어감)
 6. **Boundary Conditions**
-   - `farfield` (pressure-far-field): Mach Number = `mach`, X-Component of Flow Direction = `cos(aoa)`, Y-Component = `sin(aoa)`
+   - `farfield` (pressure-far-field): Mach Number = `mach`, X-Component of Flow Direction = `cos(flow_angle)`, Y-Component = `sin(flow_angle)`
    - `main`, `flap1`(, `flap2`): wall
 7. **Reference Values**: Compute from `farfield`, Length = 메인 코드(m), Area = 메인 코드 × 1 m (2D). 속도·길이·면적은 저널이 케이스마다 다시 설정합니다
 8. **Report Definitions**: Force 리포트를 Coefficient로 만듭니다.
@@ -232,7 +241,7 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
    - `cx-main`, `cy-main`, `cx-flap1`, `cy-flap1`(, `cx-flap2`, `cy-flap2`): 각 요소만
    - Report File `coef-rfile`에 위 리포트를 모두 넣습니다.
 
-   cl/cd 대신 물체축 cx/cy를 쓰는 이유: 받음각마다 Fluent의 force vector를 바꿀 필요 없이 도구가 `cl = cy·cosα − cx·sinα`, `cd = cx·cosα + cy·sinα`로 변환합니다 (`cl-flap1`, `cd-flap2` 등 요소별도 자동).
+   cl/cd 대신 물체축 cx/cy를 쓰는 이유: 받음각마다 Fluent의 force vector를 바꿀 필요 없이 도구가 유입 각도 θ(`flow_angle`)로 `cl = cy·cosθ − cx·sinθ`, `cd = cx·cosθ + cy·sinθ`를 계산합니다. 다운포스 날개는 `cl` 부호를 바꿔 아래 방향을 +로 출력합니다 (`cl-flap1`, `cd-flap2` 등 요소별도 자동).
 9. **이미지용 그래픽 객체와 뷰**
    - Contour `contour-pressure` (Pressure Coefficient), `contour-velocity` (Velocity Magnitude)
    - 날개 전체가 보이게 확대 → `View > Save View` 이름 `near`
@@ -242,8 +251,8 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 ### 파일럿 확인 순서
 
 1. `sample_meshes.zip`(예제 폴더)의 메쉬 2개를 Fluent에서 열어 Mesh Check를 확인합니다.
-   - 2단: `4412c375_4412c115d20g6o5` (메인 375 mm + 플랩 115 mm)
-   - 3단: `4412c375_4412c80d25g6o5_4412c80d35g8o3` (메인 375 mm + 플랩 80 mm × 2)
+   - 2단: `4412c375_4412c115d20g6o5_inv` (메인 375 mm + 플랩 115 mm, 뒤집힌 날개)
+   - 3단: `4412c375_4412c80d25g6o5_4412c80d35g8o3_inv` (메인 375 mm + 플랩 80 mm × 2, 뒤집힌 날개)
 2. 위 순서로 베이스 케이스를 만든 뒤 `File > Replace Mesh`로 같은 구성의 다른 메쉬로 바꿔도 경계조건, 리포트, 뷰가 유지되는지 확인합니다.
 3. 케이스 하나씩 배치로 돌려봅니다:
 
@@ -257,13 +266,13 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 
 4. `runs/2el_4412c375/2el_4412c375_f115d20g6_v100_a4/solver.log`에서 저널 명령이 오류 없이 실행됐는지, `img_*.png`가 저장됐는지 확인합니다.
 
-저널(`journal.jou`)의 TUI 명령은 Fluent 버전에 따라 프롬프트가 다를 수 있습니다. 오류가 나면 GUI에서 `File > Write > Start Journal`로 같은 작업을 녹화해 해당 줄을 교체하세요. 특히 `/file/replace-mesh`, `/report/reference-values/...`, `/display/save-picture` 부분을 확인하면 됩니다.
+저널(`journal.jou`)의 TUI 명령은 Fluent 버전에 따라 프롬프트가 다를 수 있습니다. 오류가 나면 GUI에서 `File > Write > Start Journal`로 같은 작업을 녹화해 해당 줄을 교체하세요. 특히 `/file/replace-mesh`, `/define/named-expressions/edit`, `/report/reference-values/...`, `/display/save-picture` 부분을 확인하면 됩니다.
 
 ## 결과물
 
 | 파일 | 내용 |
 |---|---|
-| `runs/summary.csv` | 케이스별 형상·받음각·속도, 상태, cx/cy, **cl/cd, l/d** (요소별 포함), `lift_N_per_m`/`drag_N_per_m`, 반복 수 |
+| `runs/summary.csv` | 케이스별 형상·받음각·속도, 상태, cx/cy, **cl/cd, l/d** (요소별 포함, 다운포스 날개는 cl = 다운포스 계수), `downforce_N_per_m`(또는 `lift_N_per_m`)/`drag_N_per_m`, 반복 수 |
 | `runs/ranking.csv` | 형상별 최대 Cl과 그때 받음각, 최대 L/D와 그때 받음각·Cl·Cd. `objective` 기준 정렬 (`split_by` 조건별 순위, 2단·3단 함께 비교) |
 | `runs/plots/*.png` | 형상별 Cl-α, Cd-α, L/D-α, 극곡선 (`split_by`가 있으면 조건별 폴더), `by_<조건>.png` |
 | `runs/_meshes/<형상>/` | `geometry.png`, `mesh.png`, `mesh_slot1.png`(, `mesh_slot2.png`), `mesh_le.png`, `mesh_info.json` |

@@ -1,7 +1,8 @@
 ; ============================================================
 ; AERO_AUTOMATION 저널 템플릿 (2D 다요소 날개: 메인 + 플랩 1~2개)
 ;  - 달러+중괄호 표기는 케이스마다 자동 치환됩니다 (예: 받음각 aoa, 메쉬 경로 mesh_file)
-;  - 기본 제공 변수: case_name, group, case_dir, project_dir, nprocs, mesh_file, mesh_name
+;  - 기본 제공 변수: case_name, group, case_dir, project_dir, nprocs, mesh_file, mesh_name,
+;    flow_angle (실제 유입 각도. 다운포스 날개는 -aoa)
 ;
 ;  준비물: base_2el.cas.h5, base_3el.cas.h5 (README의 "베이스 케이스 만들기" 참고)
 ;  TUI 프롬프트는 Fluent 버전마다 다를 수 있으니, 처음 한 번은
@@ -16,7 +17,7 @@
 /mesh/check
 
 ; 유입 조건: 베이스 케이스의 Named Expression을 케이스 값으로 변경
-/define/named-expressions/edit "aoa" definition "${aoa} [deg]" q
+/define/named-expressions/edit "flow_angle" definition "${flow_angle} [deg]" q
 /define/named-expressions/edit "mach" definition "${mach:.6f}" q
 
 ; 기준값: 속도마다 바뀌므로 매 케이스 갱신 (안 하면 cx, cy가 베이스 케이스 속도로 무차원화됨)

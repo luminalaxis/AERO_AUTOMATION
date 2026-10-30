@@ -101,6 +101,8 @@ def mesh_name(params: dict) -> str:
                  f"o{_fmt(p.get(f'flap{i}_overlap', 0))}")
     if "main_chord" not in p and "chord" in p:
         name += f"_c{_fmt(p['chord'])}"
+    if p.get("downforce"):
+        name += "_inv"
     return name
 
 
@@ -194,7 +196,8 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     wake_pts = []
     for el in geom.elements:
         te = 0.5 * (el.te_upper + el.te_lower)
-        for ang in s.wake_angles:
+        # 다운포스(뒤집힌) 형상은 유입 각도가 반대라 후류 방향도 거울상
+        for ang in ([-a for a in s.wake_angles] if geom.info.get("downforce") else s.wake_angles):
             d = np.array([math.cos(math.radians(ang)), math.sin(math.radians(ang))])
             for k in np.arange(0.02, s.wake_length, s.wake_size * 2):
                 wake_pts.append(geo.addPoint(*(te + k * d), 0, lc))

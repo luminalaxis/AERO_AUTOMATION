@@ -1,4 +1,4 @@
-# 2D 다요소 날개 형상 최적화 예제: 2단(메인 + 플랩 1개)과 3단(메인 + 플랩 2개)
+# 2D 다요소 다운포스 날개(뒤집힌 날개) 형상 최적화 예제: 2단(메인 + 플랩 1개)과 3단(메인 + 플랩 2개)
 #   길이 단위는 모두 mm (코드, 갭, 오버랩)
 #   메인 코드 300~450 mm, 플랩 코드 80~150 mm, 속도 40~100 km/h
 #   aero-auto screen 으로 속도별 저충실도 선별 후 가망 있는 케이스만 CFD 실행
@@ -19,6 +19,8 @@ graphics = true              # Fluent 컨투어 이미지 저장 (Windows: -hidd
 timeout_minutes = 60
 
 [constants]                  # 모든 케이스 공통 (세트/스윕 값이 우선)
+downforce = true             # 뒤집힌 날개: 형상을 위아래로 뒤집고, 양의 aoa = 다운포스 증가 방향
+                             # 결과의 cl 은 다운포스 계수(아래 방향 +), 힘은 downforce_N_per_m
 iterations = 2000
 
 [cases]
@@ -27,7 +29,7 @@ group = "{case_set}_{main_airfoil}c{main_chord}"   # 분류 폴더: 세트 × �
 [cases.sweep]                # 공통 스윕: 2단·3단 모두에 적용
 main_airfoil = ["2412", "4412"]  # NACA 4자리 또는 좌표 파일 (예: "airfoils/main.dat")
 main_chord = [300, 375, 450]     # 메인 코드 [mm]
-aoa = [0, 4, 8, 12, 16, 20]      # [deg] 메쉬는 공유, Fluent에서 유입 방향만 변경
+aoa = [0, 4, 8, 12, 16, 20]      # [deg] 다운포스가 커지는 방향 +. Fluent 유입 각도는 flow_angle = -aoa 로 자동 계산
 speed_kmh = [40, 60, 80, 100]    # 주행 속도 [km/h]
 
 # ---------------------------------------------------------------- 2단: 메인 + 플랩 1개
@@ -97,5 +99,5 @@ report_files = ["*.out"]
 average_last = 100           # 마지막 100 iteration 평균
 x_param = "aoa"
 wind_axes = true             # cx, cy 리포트 → cl, cd 자동 변환 (요소별 cx-flap1 등도)
-objective = "max_ld"         # 형상 순위: max_ld 또는 max_cl
+objective = "max_ld"         # 형상 순위: max_ld (다운포스/항력 효율) 또는 max_cl (최대 다운포스)
 split_by = ["speed_kmh"]     # 속도별로 순위·그래프·스크리닝 선별을 따로 수행

@@ -86,6 +86,9 @@ def evaluate_geometry(params: dict, root: Path, case_alphas: list[float], re: fl
 
     비점성 해는 Re/Mach와 무관하므로 cache에 형상별로 저장해 조건(속도)마다 재사용한다.
     """
+    # 자유류에서는 뒤집힌(다운포스) 날개가 똑바른 날개의 정확한 거울상이므로, 똑바른 형상을
+    # 같은 받음각으로 풀면 양력 = 다운포스 크기, 항력·박리는 동일하다.
+    params = {k: v for k, v in params.items() if k != "downforce"}
     key = repr(sorted(params.items()))  # 같은 형상은 조건(속도)이 달라도 비점성 해 재사용
     if cache is not None and key in cache:
         geom, sol = cache[key]
