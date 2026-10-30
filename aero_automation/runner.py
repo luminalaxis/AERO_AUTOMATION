@@ -94,7 +94,7 @@ def find_fluent() -> str:
         return found
     raise ConfigError(
         "Fluent 실행 파일을 찾지 못했습니다. project.toml의 [solver] executable에 경로를 지정하세요.\n"
-        r"  예) C:\Program Files\ANSYS Inc\v242\fluent\ntbin\win64\fluent.exe"
+        r"  예) C:\Program Files\ANSYS Inc\v261\fluent\ntbin\win64\fluent.exe"
     )
 
 

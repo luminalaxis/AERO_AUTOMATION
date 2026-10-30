@@ -13,7 +13,7 @@ max_parallel = 1             # 동시에 돌릴 케이스 수 (라이선스/코�
 [solver]
 kind = "fluent"
 # 비워두면 AWP_ROOTxxx 환경변수로 최신 버전 자동 탐색
-# executable = 'C:\Program Files\ANSYS Inc\v242\fluent\ntbin\win64\fluent.exe'
+# executable = 'C:\Program Files\ANSYS Inc\v261\fluent\ntbin\win64\fluent.exe'
 mode = "2ddp"
 processes = 4
 graphics = true              # Fluent 컨투어 이미지 저장 (Windows: -hidden 으로 실행)
