@@ -108,5 +108,5 @@ report_files = ["*.out"]
 average_last = 100           # 마지막 100 iteration 평균
 x_param = "aoa"
 wind_axes = true             # cx, cy 리포트 → cl, cd 자동 변환 (요소별 cx-flap1 등도)
-objective = "max_ld"         # 형상 순위: max_ld (다운포스/항력 효율) 또는 max_cl (최대 다운포스)
+objective = "max_cl"         # 형상 순위: max_cl (최대 다운포스, 현재) 또는 max_ld (다운포스/항력 효율)
 split_by = ["speed_kmh"]     # 속도별로 순위·그래프·스크리닝 선별을 따로 수행
