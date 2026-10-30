@@ -24,7 +24,7 @@ import numpy as np
 from .cases import Case
 from .config import ConfigError, ProjectConfig, safe_name
 from .geometry import build_geometry
-from .meshing import GEOMETRY_KEYS, mesh_name
+from .meshing import GEOMETRY_KEYS, mesh_name, shape_name
 from .panel import analyze, solve_inviscid
 
 SCREEN_DIR = "screening"
@@ -83,7 +83,7 @@ def evaluate_geometry(params: dict, root: Path, case_alphas: list[float], re: fl
 
     비점성 해는 Re/Mach와 무관하므로 cache에 형상별로 저장해 조건(속도)마다 재사용한다.
     """
-    key = mesh_name(params)
+    key = shape_name(params)  # 코드 길이는 무차원 해에 영향 없음 → 단면 형상별로 재사용
     if cache is not None and key in cache:
         geom, sol = cache[key]
     else:

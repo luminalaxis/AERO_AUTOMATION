@@ -184,3 +184,45 @@ def test_ranking_per_condition(tmp_path):
     assert best == {40: "B", 100: "A"}
     assert sorted(e["rank"] for e in ranking) == [1, 1, 2, 2]
     assert plot_condition_trend(ranking, "speed_kmh", ["geo"], "max_ld", tmp_path / "t.png").is_file()
+
+
+def test_chord_sweep_meshes_and_forces(tmp_path):
+    """코드 길이를 스윕하면 코드별로 메쉬가 따로 생기고, Re는 속도·코드로 계산된다."""
+    cfg_path = make_project(tmp_path)
+    text = cfg_path.read_text()
+    text = text.replace('mach = 0.15\n', '')
+    text = text.replace('aoa = [0, 8, 16, 24]', 'aoa = [0, 8]\nspeed_kmh = [40, 100]\nchord = [0.1, 0.2]')
+    text = text.replace('name = "{main_airfoil}_g{gap}_a{aoa}"',
+                        'name = "{main_airfoil}_c{chord}_g{gap}_v{speed_kmh}_a{aoa}"')
+    text = text.replace('[screening]', '''[derived]
+velocity = "speed_kmh / 3.6"
+mach = "velocity / 340.29"
+reynolds = "1.225 * velocity * chord / 1.7894e-5"
+
+[mesh]
+
+[screening]''')
+    cfg_path.write_text(text)
+    cfg = load_config(cfg_path)
+    cases = build_cases(cfg)
+
+    # 형상 6개 × 코드 2개 = 메쉬 12개, 속도는 공유
+    assert len({c.mesh.name for c in cases}) == 12
+    c = next(c for c in cases if c.params["chord"] == 0.2 and c.params["speed_kmh"] == 40)
+    assert c.mesh.name.endswith("_c0.2")
+    assert c.mesh.settings.chord == 0.2
+    re_100 = 1.225 * (100 / 3.6) * 0.2 / 1.7894e-5
+    assert c.mesh.settings.reynolds == pytest.approx(re_100)  # 같은 코드의 최고 속도 기준
+
+    r = screen(cfg, cases, log=lambda *_: None)
+    assert {g["chord"] for g in r["geometries"]} == {0.1, 0.2}
+
+
+def test_forces_per_span():
+    from aero_automation.results import _forces_per_span
+
+    row = {"cl": 1.5, "cd": 0.05, "velocity": 20.0, "chord": 0.15}
+    _forces_per_span(row)
+    q = 0.5 * 1.225 * 20.0**2
+    assert row["lift_N_per_m"] == pytest.approx(q * 0.15 * 1.5)
+    assert row["drag_N_per_m"] == pytest.approx(q * 0.15 * 0.05)

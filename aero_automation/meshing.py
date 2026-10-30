@@ -17,7 +17,8 @@ from .config import ConfigError, safe_name
 from .fluent_msh import Boundary, check_msh, write_msh
 from .geometry import Geometry, build_geometry
 
-GEOMETRY_KEYS = ("main_airfoil", "flap_airfoil", "flap_chord", "flap_deflection", "gap", "overlap")
+# 형상(메쉬)을 구분하는 변수. chord는 단면 모양은 같아도 실제 크기(m)가 달라 메쉬를 따로 만든다.
+GEOMETRY_KEYS = ("main_airfoil", "flap_airfoil", "flap_chord", "flap_deflection", "gap", "overlap", "chord")
 MESH_FILE = "mesh.msh"
 INFO_FILE = "mesh_info.json"
 ERROR_FILE = "mesh_error.txt"
@@ -91,13 +92,20 @@ def _fmt(v) -> str:
     return Path(str(v)).stem if ("/" in str(v) or "." in str(v)) else str(v)
 
 
-def mesh_name(params: dict) -> str:
+def shape_name(params: dict) -> str:
+    """무차원 단면 형상 이름 (코드 길이 제외)."""
     main = _fmt(params["main_airfoil"])
     if not params.get("flap_airfoil"):
         return main
     return (f"{main}-{_fmt(params['flap_airfoil'])}_fc{_fmt(params['flap_chord'])}"
             f"_d{_fmt(params.get('flap_deflection', 0))}_g{_fmt(params['gap'])}"
             f"_ov{_fmt(params.get('overlap', 0))}")
+
+
+def mesh_name(params: dict) -> str:
+    """메쉬 이름: 단면 형상 + 코드 길이(케이스 변수 chord가 있을 때)."""
+    name = shape_name(params)
+    return f"{name}_c{_fmt(params['chord'])}" if params.get("chord") not in (None, "") else name
 
 
 def make_job(params: dict, mesh_cfg: dict, meshes_dir: Path) -> MeshJob:

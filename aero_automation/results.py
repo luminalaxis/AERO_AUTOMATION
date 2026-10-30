@@ -96,7 +96,23 @@ def summarize_case(cfg: ProjectConfig, case: Case) -> dict:
         _wind_axes(row, cfg.results.x_param)
     if isinstance(row.get("cl"), float) and isinstance(row.get("cd"), float) and row["cd"]:
         row["l/d"] = row["cl"] / row["cd"]
+    _forces_per_span(row)
     return row
+
+
+def _forces_per_span(row: dict) -> None:
+    """케이스 변수 velocity[m/s], chord[m]가 있으면 단위 폭(1 m)당 양력/항력 [N/m]도 계산.
+
+    코드 길이가 다른 형상끼리 실제 힘을 비교할 때 사용 (계수는 각자의 코드로 무차원화돼 있음).
+    """
+    v, c = row.get("velocity"), row.get("chord")
+    if not isinstance(v, (int, float)) or not isinstance(c, (int, float)):
+        return
+    rho = row.get("density", 1.225)
+    q = 0.5 * rho * v**2
+    for coef, name in (("cl", "lift_N_per_m"), ("cd", "drag_N_per_m")):
+        if isinstance(row.get(coef), float):
+            row[name] = q * c * row[coef]
 
 
 def _write_csv(path: Path, rows: list[dict]) -> Path:

@@ -1,7 +1,7 @@
 # 2D 메인익 + 슬롯 플랩 형상 최적화 예제
-#   메인익 4종 × 플랩 2종 × 플랩각 2 × 갭 3 = 형상 48개
-#   × 받음각 6 × 속도 4 (40/60/80/100 km/h) = 1152 케이스
-#   메쉬는 형상별 48개만 생성 (속도·받음각 공유)
+#   메인익 4종 × 플랩 2종 × 플랩각 2 × 갭 3 × 코드 3 = 형상 144개
+#   × 받음각 6 × 속도 4 (40/60/80/100 km/h) = 3456 케이스
+#   메쉬는 형상(코드 포함)별 144개만 생성 (속도·받음각 공유)
 #   aero-auto screen 으로 속도별 저충실도 선별 후 가망 있는 케이스만 CFD 실행
 
 [project]
@@ -22,16 +22,16 @@ timeout_minutes = 60
 [constants]                  # 모든 케이스 공통 (스윕 값이 우선)
 flap_chord = 0.3             # 플랩 시위 / 메인익 시위
 overlap = 0.01               # [c] 메인익 뒷전 x - 플랩 앞전 x
-chord = 0.1157               # 메인익 시위 [m] ← 실제 값으로 변경 (현재: 100 km/h에서 Re 22만이 되는 값)
 iterations = 2000
 
 [cases]
-name = "{main_airfoil}-{flap_airfoil}_d{flap_deflection}_g{gap}_v{speed_kmh}_a{aoa}"
-group = "{main_airfoil}-{flap_airfoil}_d{flap_deflection}_g{gap}"   # 형상별 분류 폴더
+name = "{main_airfoil}-{flap_airfoil}_c{chord}_d{flap_deflection}_g{gap}_v{speed_kmh}_a{aoa}"
+group = "{main_airfoil}-{flap_airfoil}_c{chord}_d{flap_deflection}_g{gap}"   # 형상별 분류 폴더
 
 [cases.sweep]                # 전체 조합으로 케이스 생성
 main_airfoil = ["0012", "2412", "4412", "6412"]  # NACA 4자리 또는 좌표 파일 (예: "airfoils/main.dat")
 flap_airfoil = ["4412", "6412"]
+chord = [0.10, 0.12, 0.15]   # 메인익 코드(시위) 길이 [m] ← 실제 범위로 변경. 100 km/h에서 Re 약 19만/23만/29만
 flap_deflection = [20, 30]   # [deg] 뒷전 아래 방향 +
 gap = [0.01, 0.02, 0.03]     # [c] 메인익 뒷전 ~ 플랩 표면 최소 거리
 aoa = [0, 4, 8, 12, 16, 20]  # [deg] 메쉬는 공유, Fluent에서 유입 방향만 변경
@@ -44,7 +44,9 @@ reynolds = "1.225 * velocity * chord / 1.7894e-5"    # 메인익 시위 기준
 
 [screening]                  # CFD 전 저충실도 선별 (aero-auto screen), 속도별로 따로 선별
 transition = "free"          # Re 10만대는 천이 영향이 커서 자연 천이로 추정 (Fluent는 Transition SST 권장)
-protect = ["gap", "overlap"] # 이 변수 값만으로는 제외하지 않음 (슬롯 유동은 저충실도 예측이 부정확)
+protect = ["gap", "overlap", "chord"]  # 이 변수 값만으로는 제외하지 않음
+                             #  gap/overlap: 슬롯 유동은 저충실도 예측이 부정확
+                             #  chord: 길수록 Re가 커져 L/D가 항상 유리 → 크기 득실은 사람이 판단
 keep_top = 3                 # 점수 상위 3개 계열(익형 조합 × 플랩각)은 항상 유지
 keep_within = 0.05           # 최고 계열 대비 5% 이내면 유지
 spot_check = 1               # 제외된 계열 중 최상위 1개는 대표 케이스만 CFD로 검증
@@ -52,7 +54,7 @@ aoa_margin = 2.0             # 추정 실속각 + 2° 까지 해석 (넘는 첫 
 
 [mesh]                       # gmsh 자동 메쉬 (전체 항목은 README 참고)
 # chord, reynolds 는 케이스 변수에서 자동으로 가져옴
-# (형상이 같으면 속도와 무관하게 메쉬 공유, 첫 셀 높이는 최고 Re 기준 → 모든 속도에서 y+ ≤ 1)
+# (형상·코드가 같으면 속도와 무관하게 메쉬 공유, 첫 셀 높이는 최고 Re 기준 → 모든 속도에서 y+ ≤ 1)
 y_plus = 1.0
 growth_rate = 1.15
 surface_cells = 200          # 메인익 윗면/아랫면 각각
