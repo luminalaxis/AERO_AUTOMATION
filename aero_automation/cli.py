@@ -98,13 +98,27 @@ def cmd_screen(args) -> int:
     infeasible = {g["geometry"] for g in r["geometries"] if not g["feasible"]}
     n_geom = len({g["geometry"] for g in r["geometries"]})
     print(f"\n형상 {n_geom}개 (형상 불가 {len(infeasible)}개)")
+    from .screening import ScreeningConfig
+
+    ground = any(c.params.get("ground_clearance") not in (None, "") for c in cases)
+    show_stall = ScreeningConfig.from_dict(cfg.screening).prune_aoa
+    if ground:
+        # 지면 근처에서는 비점성 근사가 흡입을 크게 과대평가해 절대값이 실제의 몇 배로 나온다.
+        # 오해를 막기 위해 절대값 대신 조건 안 최고 형상 대비 상대 점수만 보여준다.
+        print("\n※ 지면 모드: 저충실도 추정의 절대값(Cl, L/D)은 실제보다 몇 배 크게 나오므로 표시하지 않습니다.\n"
+              "   아래 점수는 같은 조건 안에서 최고 형상 대비 비율(100 = 최고)이며 순위 비교용입니다.")
     for c in r["conditions"]:
         print(f"\n[{c['condition']}] 계열 {c['families']}개 중 {c['families_kept']}개 유지. "
               f"상위 형상 ({r['score_key']} 기준, 저충실도 추정):")
+        best = c["best"][0][r["score_key"]] if c["best"] else 1.0
         for g in c["best"]:
             stall = g["alpha_stall_est"]
-            print(f"  {g['geometry']:<45} Re {g['reynolds']:,.0f}  Cl max {g['cl_max_est']:.2f}  "
-                  f"L/D max {g['ld_max_est']:.1f}  실속 {'-' if stall is None else f'{stall:.1f}°'}")
+            stall_txt = f"  실속 {'-' if stall is None else f'{stall:.1f}°'}" if show_stall else ""
+            if ground:
+                print(f"  {g['geometry']:<50} Re {g['reynolds']:,.0f}  상대 점수 {g[r['score_key']] / best * 100:5.1f}")
+            else:
+                print(f"  {g['geometry']:<45} Re {g['reynolds']:,.0f}  Cl max {g['cl_max_est']:.2f}  "
+                      f"L/D max {g['ld_max_est']:.1f}{stall_txt}")
     print(f"\n케이스 {len(cases)}개 → {n_kept}개 해석 ({(1 - n_kept / len(cases)) * 100:.0f}% 절감)")
     if r["spot_check"]:
         n_spot = sum(len(s["cases"]) for s in r["spot_check"])
