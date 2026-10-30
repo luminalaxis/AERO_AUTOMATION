@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,14 @@ class ConfigError(ValueError):
     pass
 
 
+_UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\s]+')
+
+
+def safe_name(text: str) -> str:
+    """파일/폴더 이름으로 쓸 수 없는 문자를 _로 바꾼다."""
+    return _UNSAFE_CHARS.sub("_", text).strip("._") or "case"
+
+
 @dataclass
 class SolverConfig:
     kind: str = "fluent"  # "fluent" 또는 "custom"
@@ -24,6 +33,7 @@ class SolverConfig:
     mode: str = "3ddp"  # Fluent: 2d, 2ddp, 3d, 3ddp
     processes: int = 4
     gui: bool = False
+    graphics: bool = False  # Fluent 이미지 저장 시 true (Windows: -hidden, Linux: -gu -driver null)
     extra_args: list[str] = field(default_factory=list)
     command: list[str] | None = None  # kind="custom"일 때 명령어 템플릿
     timeout_minutes: float | None = None
@@ -35,6 +45,9 @@ class ResultsConfig:
     average_last: int = 1  # 마지막 N개 반복의 평균을 결과값으로 사용
     error_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_ERROR_PATTERNS))
     summary_file: str = "summary.csv"
+    x_param: str = "aoa"  # 그래프 x축 / 받음각 변수 이름
+    wind_axes: bool = True  # cx, cy 리포트를 받음각으로 회전해 cl, cd 계산
+    objective: str = "max_ld"  # 형상 순위 기준: max_ld (최대 양항비) 또는 max_cl (최대 양력계수)
 
 
 @dataclass
@@ -50,6 +63,7 @@ class ProjectConfig:
     constants: dict
     derived: dict[str, str]
     max_parallel: int
+    mesh: dict | None
     solver: SolverConfig
     results: ResultsConfig
 
@@ -100,6 +114,7 @@ def load_config(path: str | Path) -> ProjectConfig:
         constants=data.get("constants", {}),
         derived=data.get("derived", {}),
         max_parallel=int(project.get("max_parallel", 1)),
+        mesh=data.get("mesh"),
         solver=solver,
         results=results,
     )

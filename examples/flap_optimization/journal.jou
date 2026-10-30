@@ -1,0 +1,47 @@
+; ============================================================
+; AERO_AUTOMATION 저널 템플릿 (메인익 + 플랩 2D)
+;  - 달러+중괄호 표기는 케이스마다 자동 치환됩니다 (예: 받음각 aoa, 메쉬 경로 mesh_file)
+;  - 기본 제공 변수: case_name, group, case_dir, project_dir, nprocs, mesh_file, mesh_name
+;
+;  준비물: base.cas.h5 (README의 "베이스 케이스 만들기" 참고)
+;  TUI 프롬프트는 Fluent 버전마다 다를 수 있으니, 처음 한 번은
+;  GUI에서 File > Write > Start Journal 로 녹화해 비교해 보세요.
+; ============================================================
+
+/file/read-case "${project_dir}/base.cas.h5"
+
+; 형상별 메쉬로 교체 (경계 이름 main / flap / farfield 가 같아서 설정이 유지됨)
+/file/replace-mesh "${mesh_file}"
+/mesh/check
+
+; 유입 조건: 베이스 케이스의 Named Expression을 케이스 값으로 변경
+/define/named-expressions/edit "aoa" definition "${aoa} [deg]" q
+/define/named-expressions/edit "mach" definition "${mach}" q
+
+; 리포트 파일을 케이스 폴더에 저장 (cx, cy, cx-main, cy-main, cx-flap, cy-flap)
+/solve/report-files/edit "coef-rfile" file-name "coef-rfile.out" q
+
+/solve/initialize/compute-defaults/pressure-far-field farfield
+/solve/initialize/initialize-flow
+/solve/iterate ${iterations}
+
+/file/write-case-data "result.cas.h5"
+
+; ---------------- 이미지 저장 (project.toml [solver] graphics = true 필요)
+; 베이스 케이스에 그래픽 객체(contour-pressure, contour-velocity)와
+; 뷰(near, slot)를 저장해 두면 아래 명령으로 자동 저장됩니다.
+/display/set/picture/driver png
+/display/set/picture/x-resolution 1600
+/display/set/picture/y-resolution 1000
+
+/views/restore-view "near"
+/display/objects/display "contour-pressure"
+/display/save-picture "img_pressure.png"
+/display/objects/display "contour-velocity"
+/display/save-picture "img_velocity.png"
+
+/views/restore-view "slot"
+/display/objects/display "contour-velocity"
+/display/save-picture "img_slot_velocity.png"
+
+/exit yes

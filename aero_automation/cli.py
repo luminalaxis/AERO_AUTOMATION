@@ -1,9 +1,10 @@
 """명령줄 인터페이스.
 
     python -m aero_automation plan     # 케이스 목록 확인 + 폴더/저널 생성
+    python -m aero_automation mesh     # 형상별 메쉬 생성 + 형상/메쉬 이미지
     python -m aero_automation run      # 배치 실행 (완료된 케이스는 건너뜀)
     python -m aero_automation status   # 케이스별 진행 상태
-    python -m aero_automation collect  # 결과 요약 CSV 생성
+    python -m aero_automation collect  # 결과 요약 CSV, 순위, 그래프 생성
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from .cases import build_cases, filter_cases
 from .config import ConfigError, load_config
 from .expr import ExpressionError
 from .results import collect
-from .runner import build_command, prepare_case, read_status, run_all
+from .runner import build_command, ensure_meshes, prepare_case, read_status, run_all
 
 
 def _load(args):
@@ -49,6 +50,9 @@ def cmd_plan(args) -> int:
     cfg, cases = _load(args)
     _print_table(cases)
     print(f"\n총 {len(cases)}개 케이스 → {cfg.output_dir}")
+    meshes = {c.mesh.name for c in cases if c.mesh is not None}
+    if meshes:
+        print(f"형상(메쉬) {len(meshes)}개 → {cfg.output_dir / '_meshes'}")
     if args.dry_run:
         return 0
     template_text = cfg.template.read_text(encoding="utf-8")
@@ -68,9 +72,31 @@ def cmd_run(args) -> int:
     results = run_all(cfg, cases, force=args.force, max_parallel=args.jobs)
     counts = Counter(r.state for r in results)
     print("\n결과: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
-    summary = collect(cfg, build_cases(cfg))
-    print(f"요약: {summary}")
+    _print_collect(collect(cfg, build_cases(cfg)), cfg)
     return 1 if counts.get("failed") else 0
+
+
+def cmd_mesh(args) -> int:
+    cfg, cases = _load(args)
+    if cfg.mesh is None:
+        raise ConfigError("project.toml에 [mesh] 섹션이 없습니다.")
+    errors = ensure_meshes(cfg, cases, force=args.force)
+    print(f"\n메쉬 폴더: {cfg.output_dir / '_meshes'}  (형상별 mesh.msh, geometry.png, mesh*.png)")
+    return 1 if errors else 0
+
+
+def _print_collect(result: dict, cfg) -> None:
+    print(f"요약: {result['summary']}")
+    if result["ranking"]:
+        key = "ld_max" if cfg.results.objective == "max_ld" else "cl_max"
+        print(f"형상 순위 ({key} 기준): {result['ranking']}")
+        for e in result["top"]:
+            desc = ", ".join(f"{k}={v}" for k, v in e.items()
+                             if k not in ("rank", "n_aoa", "mesh") and "@" not in k and not k.endswith("_max"))
+            extra = f"L/D max {e['ld_max']:.2f}" if "ld_max" in e else ""
+            print(f"  {e['rank']}. {desc}  Cl max {e['cl_max']:.3f}  {extra}")
+    if result["plots"]:
+        print(f"그래프: {result['plots'][0].parent}")
 
 
 def cmd_status(args) -> int:
@@ -88,8 +114,7 @@ def cmd_status(args) -> int:
 
 def cmd_collect(args) -> int:
     cfg, cases = _load(args)
-    out = collect(cfg, cases)
-    print(f"요약 CSV 저장: {out}")
+    _print_collect(collect(cfg, cases), cfg)
     return 0
 
 
@@ -107,11 +132,13 @@ def main(argv=None) -> int:
 
     p = add("plan", cmd_plan, "케이스 목록 확인 및 폴더/저널 생성")
     p.add_argument("--dry-run", action="store_true", help="목록만 출력하고 파일은 만들지 않음")
-    p = add("run", cmd_run, "배치 실행")
+    p = add("mesh", cmd_mesh, "형상별 메쉬 생성 (이미 있으면 건너뜀)")
+    p.add_argument("--force", action="store_true", help="기존 메쉬도 다시 생성")
+    p = add("run", cmd_run, "배치 실행 (필요한 메쉬 자동 생성)")
     p.add_argument("--force", action="store_true", help="완료된 케이스도 다시 실행")
     p.add_argument("-j", "--jobs", type=int, help="동시 실행 케이스 수 (라이선스 수 고려)")
     add("status", cmd_status, "진행 상태 확인")
-    add("collect", cmd_collect, "결과 요약 CSV 생성")
+    add("collect", cmd_collect, "결과 요약 CSV, 형상 순위, 그래프 생성")
 
     args = parser.parse_args(argv)
     try:

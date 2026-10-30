@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import csv
 import itertools
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import ConfigError, ProjectConfig
+from .config import ConfigError, ProjectConfig, safe_name
 from .expr import evaluate
-
-_UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\s]+')
+from .meshing import MeshJob, make_job
 
 
 @dataclass
@@ -20,6 +18,7 @@ class Case:
     group: str
     params: dict
     dir: Path
+    mesh: MeshJob | None = None
 
 
 def _coerce(value: str):
@@ -30,10 +29,6 @@ def _coerce(value: str):
         except ValueError:
             pass
     return value
-
-
-def _safe_name(text: str) -> str:
-    return _UNSAFE_CHARS.sub("_", text).strip("._") or "case"
 
 
 def _read_csv(path: Path) -> list[dict]:
@@ -78,8 +73,8 @@ def build_cases(cfg: ProjectConfig) -> list[Case]:
         name = params.pop("name", None)
         if name is None:
             name = _format(cfg.case_name, params, "케이스 이름") if cfg.case_name else f"case_{idx:03d}"
-        name = _safe_name(str(name))
-        group = _safe_name(_format(cfg.group, params, "그룹")) if cfg.group else ""
+        name = safe_name(str(name))
+        group = safe_name(_format(cfg.group, params, "그룹")) if cfg.group else ""
 
         if name in seen:
             raise ConfigError(
@@ -89,7 +84,8 @@ def build_cases(cfg: ProjectConfig) -> list[Case]:
         seen[name] = idx
 
         case_dir = cfg.output_dir / group / name if group else cfg.output_dir / name
-        cases.append(Case(name=name, group=group, params=params, dir=case_dir))
+        mesh = make_job(params, cfg.mesh, cfg.output_dir / "_meshes") if cfg.mesh is not None else None
+        cases.append(Case(name=name, group=group, params=params, dir=case_dir, mesh=mesh))
     return cases
 
 

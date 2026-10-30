@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aero-automation"
 version = "0.1.0"
-description = "ANSYS(Fluent) 해석 케이스 분류·배치 실행 자동화"
+description = "2D 익형/플랩 형상 최적화용 ANSYS Fluent 배치 해석 자동화"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["numpy", "matplotlib", "gmsh>=4.11"]
 
 [project.optional-dependencies]
 dev = ["pytest"]

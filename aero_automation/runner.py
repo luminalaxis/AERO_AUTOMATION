@@ -39,7 +39,7 @@ def _posix(path: Path) -> str:
 
 
 def case_variables(cfg: ProjectConfig, case: Case) -> dict:
-    return {
+    variables = {
         **case.params,
         "case_name": case.name,
         "group": case.group,
@@ -47,6 +47,32 @@ def case_variables(cfg: ProjectConfig, case: Case) -> dict:
         "project_dir": _posix(cfg.root),
         "nprocs": cfg.solver.processes,
     }
+    if case.mesh is not None:
+        variables["mesh_file"] = _posix(case.mesh.mesh_file)
+        variables["mesh_name"] = case.mesh.name
+    return variables
+
+
+def ensure_meshes(cfg: ProjectConfig, cases: list[Case], force: bool = False) -> dict[str, str]:
+    """케이스에 필요한 메쉬를 생성한다 (같은 형상은 한 번만). 반환: {메쉬 이름: 오류 메시지}."""
+    from .meshing import generate_mesh
+
+    jobs = {c.mesh.name: c.mesh for c in cases if c.mesh is not None}
+    todo = [j for j in jobs.values() if force or not j.is_current()]
+    if jobs:
+        log(f"메쉬: 형상 {len(jobs)}개 중 {len(todo)}개 생성 필요")
+    errors = {}
+    for i, job in enumerate(todo, start=1):
+        start = time.monotonic()
+        try:
+            info = generate_mesh(job, cfg.root)
+        except ConfigError as exc:
+            errors[job.name] = str(exc)
+            log(f"  [{i}/{len(todo)}] {job.name:<45} 실패 - {exc}")
+            continue
+        log(f"  [{i}/{len(todo)}] {job.name:<45} {info['cells']:>8,} cells  "
+            f"품질 {info['min_quality']:.2f}  {time.monotonic() - start:4.1f}s")
+    return errors
 
 
 def find_fluent() -> str:
@@ -85,7 +111,10 @@ def build_command(cfg: ProjectConfig, case: Case) -> list[str]:
 
     exe = s.executable or find_fluent()
     cmd = [exe, s.mode, f"-t{s.processes}", "-i", JOURNAL_NAME]
-    if not s.gui:
+    if s.graphics and not s.gui:
+        # GUI 없이 그래픽 기능만 살려 save-picture 가능하게
+        cmd += ["-hidden"] if IS_WINDOWS else ["-gu", "-driver", "null"]
+    elif not s.gui:
         cmd.append("-g")
     if IS_WINDOWS:
         cmd.append("-wait")  # Windows 런처가 솔버 종료까지 기다리도록
@@ -158,6 +187,20 @@ def run_case(cfg: ProjectConfig, case: Case, template_text: str | None = None,
     if not force and read_status(case).get("state") == "done":
         return RunResult(case, "skipped", "이미 완료됨")
 
+    if case.mesh is not None and not case.mesh.mesh_file.is_file():
+        from .meshing import ERROR_FILE
+
+        error_file = case.mesh.dir / ERROR_FILE
+        reason = error_file.read_text(encoding="utf-8") if error_file.is_file() else "메쉬 파일 없음"
+        msg = f"메쉬 실패 ({case.mesh.name}): {reason}"
+        case.dir.mkdir(parents=True, exist_ok=True)
+        _write_status(case, state="failed", message=msg)
+        return RunResult(case, "failed", msg)
+
+    # 이전 실행 결과 정리 (Fluent가 기존 파일 덮어쓰기 확인을 물으면 배치가 멈춤)
+    for pattern in [*cfg.results.report_files, "*.png"]:
+        for old in case.dir.glob(pattern):
+            old.unlink()
     prepare_case(cfg, case, template_text)
     cmd = build_command(cfg, case)
     log_path = case.dir / LOG_NAME
@@ -202,6 +245,7 @@ def run_case(cfg: ProjectConfig, case: Case, template_text: str | None = None,
 def run_all(cfg: ProjectConfig, cases: list[Case], force: bool = False,
             max_parallel: int | None = None) -> list[RunResult]:
     template_text = cfg.template.read_text(encoding="utf-8")
+    ensure_meshes(cfg, [c for c in cases if force or read_status(c).get("state") != "done"])
     workers = max(1, max_parallel or cfg.max_parallel)
     total = len(cases)
     results: list[RunResult] = []
