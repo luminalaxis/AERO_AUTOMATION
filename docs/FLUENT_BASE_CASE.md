@@ -62,11 +62,17 @@ Cell Zone Conditions → `fluid`의 Material이 air인지 확인합니다.
 
 ## 5. Named Expression `speed`
 
-`Parameters & Customization > Named Expressions > New...`
+버전에 따라 트리에 `Named Expressions` 항목이 따로 없을 수 있습니다(2026 R1). 둘 중 하나로 만듭니다.
 
-- Name: `speed`
-- Definition: `27.78 [m/s]`
-- OK
+**방법 1 (가장 확실): 콘솔에 입력**
+```
+/define/named-expressions/add "speed" definition "27.78 [m/s]" q
+```
+확인: `/define/named-expressions/list` 결과에 `speed`가 보이면 됩니다.
+
+**방법 2: 트리에서**
+`Parameters & Customization > Parameters > Input Parameters`를 오른쪽 클릭 → New... → Name `speed`, Definition `27.78 [m/s]` → OK
+("Use as Input Parameter" 체크는 켜든 끄든 상관없음)
 
 저널이 케이스마다 이 값을 실제 속도(11.1~27.8 m/s)로 바꿉니다. inlet과 지면이 모두 이 expression을 참조해야 속도가 함께 바뀝니다.
 
