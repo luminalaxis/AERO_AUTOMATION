@@ -237,6 +237,8 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 
 ## Fluent 베이스 케이스 만들기 (최초 1회, 2단·3단 각각)
 
+> 화면 단위의 자세한 순서는 [docs/FLUENT_BASE_CASE.md](docs/FLUENT_BASE_CASE.md)를 보세요.
+
 해석 설정은 베이스 케이스에 해 두고, 케이스마다 메쉬만 바꿔 끼웁니다. 2단과 3단은 경계 구성이 달라서 **`base_2el.cas.h5`와 `base_3el.cas.h5`를 따로** 만듭니다(세트별 `base_case` 변수로 저널이 골라 읽음).
 
 아래는 예제(지면 효과) 기준입니다. 지면이 없는 프로젝트는 맨 아래 "지면이 없을 때"를 보세요.
