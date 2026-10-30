@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .cases import Case
 from .config import ProjectConfig, safe_name
+from .meshing import mesh_name
 from .runner import read_status
 
 _QUOTED = re.compile(r'"([^"]*)"')
@@ -84,6 +85,8 @@ def summarize_case(cfg: ProjectConfig, case: Case) -> dict:
     row = {"case": case.name, "group": case.group, **case.params}
     if case.mesh is not None:
         row["mesh"] = case.mesh.name
+        # 형상 이름 (받음각 제외): 지면 모드에서는 메쉬가 받음각마다 다르므로 순위·비교는 이 이름으로
+        row["geometry"] = mesh_name({k: v for k, v in case.params.items() if k != cfg.results.x_param})
     row["state"] = status.get("state", "pending")
     row["elapsed_min"] = round(status["elapsed_sec"] / 60, 2) if status.get("elapsed_sec") else ""
     files = sorted({p for pattern in cfg.results.report_files for p in case.dir.glob(pattern)})
@@ -159,8 +162,8 @@ def rank_geometries(rows: list[dict], keys: list[str], x_param: str, objective: 
             best_ld = max(with_ld, key=lambda r: r["l/d"])
             entry.update({"ld_max": best_ld["l/d"], f"{x_param}@ld_max": best_ld.get(x_param),
                           "cl@ld_max": best_ld["cl"], "cd@ld_max": best_ld.get("cd")})
-        if "mesh" in rs[0]:
-            entry["mesh"] = rs[0]["mesh"]
+        if "geometry" in rs[0]:
+            entry["geometry"] = rs[0]["geometry"]
         ranking.append(entry)
     sort_key = "ld_max" if objective == "max_ld" else "cl_max"
     ranking.sort(key=lambda e: (tuple(e.get(k) for k in split_by), -e.get(sort_key, float("-inf"))))

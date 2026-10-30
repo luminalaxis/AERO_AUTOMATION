@@ -18,7 +18,9 @@ import json
 import math
 import shutil
 from fnmatch import fnmatch
-from dataclasses import asdict, dataclass, field, fields
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
 import numpy as np
@@ -40,7 +42,7 @@ class ScreeningConfig:
     mach: float | None = None       # 비우면 케이스 변수 mach → 0
     transition: str = "turbulent"   # turbulent (Fluent SST 완전난류와 유사) / free
     metric: str | None = None       # max_ld / max_cl. 비우면 [results] objective
-    protect: list = field(default_factory=lambda: ["*gap", "*overlap", "main_chord", "chord"])  # 와일드카드 가능
+    protect: list = field(default_factory=lambda: ["*gap", "*overlap", "main_chord", "chord", "ground_clearance"])
     keep_top: int = 3               # 점수 상위 N개 계열은 항상 유지
     keep_within: float = 0.05       # 최고 계열 대비 이 비율 이내면 유지
     spot_check: int = 1             # 제외된 계열 중 상위 N개는 대표 케이스만 CFD로 검증
@@ -49,6 +51,7 @@ class ScreeningConfig:
     aoa_margin: float = 2.0         # 추정 실속각 + 이 값까지는 해석
     aoa_step: float = 1.0           # 실속각 탐색 간격 [deg] (사이 값은 보간)
     n_side: int = 80                # 물체당 윗면/아랫면 패널 수
+    workers: int = 0                # 병렬 프로세스 수 (0 = CPU 코어 수)
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "ScreeningConfig":
@@ -60,7 +63,8 @@ class ScreeningConfig:
 
 
 def _geometry_params(case: Case) -> dict:
-    return geometry_params(case.params)
+    """스크리닝 형상 단위: 받음각은 빼고 묶는다 (지면 모드에서는 받음각도 형상 변수지만 스윕 축으로 쓴다)."""
+    return {k: v for k, v in geometry_params(case.params).items() if k != "aoa"}
 
 
 def _flow(case: Case, cfg: ProjectConfig, sc: ScreeningConfig) -> tuple[float, float]:
@@ -86,20 +90,43 @@ def evaluate_geometry(params: dict, root: Path, case_alphas: list[float], re: fl
 
     비점성 해는 Re/Mach와 무관하므로 cache에 형상별로 저장해 조건(속도)마다 재사용한다.
     """
-    # 자유류에서는 뒤집힌(다운포스) 날개가 똑바른 날개의 정확한 거울상이므로, 똑바른 형상을
-    # 같은 받음각으로 풀면 양력 = 다운포스 크기, 항력·박리는 동일하다.
-    params = {k: v for k, v in params.items() if k != "downforce"}
-    key = repr(sorted(params.items()))  # 같은 형상은 조건(속도)이 달라도 비점성 해 재사용
-    if cache is not None and key in cache:
-        geom, sol = cache[key]
-    else:
-        geom = build_geometry(params, root)
-        sol = solve_inviscid(geom, sc.n_side)
-        if cache is not None:
-            cache[key] = (geom, sol)
-    lo, hi = min(case_alphas), max(case_alphas) + sc.aoa_margin + 4
+    cache = {} if cache is None else cache
+    ground = params.get("ground_clearance") not in (None, "")
+    lo, hi = min(case_alphas), max(case_alphas) + sc.aoa_margin + (2 if ground else 4)
     grid = np.unique(np.round(np.concatenate([np.arange(lo, hi + 1e-9, sc.aoa_step), case_alphas]), 6))
-    pts = [analyze(sol, a, re, mach, sc.transition) for a in grid]
+
+    if not ground:
+        # 자유류에서는 뒤집힌(다운포스) 날개가 똑바른 날개의 정확한 거울상이므로, 똑바른 형상을
+        # 같은 받음각으로 풀면 양력 = 다운포스 크기, 항력·박리는 동일하다.
+        params = {k: v for k, v in params.items() if k != "downforce"}
+        key = repr(sorted(params.items()))  # 같은 형상은 조건(속도)이 달라도 비점성 해 재사용
+        if key not in cache:
+            geom = build_geometry(params, root)
+            cache[key] = (geom, solve_inviscid(geom, sc.n_side))
+        geom, sol = cache[key]
+        pts = [analyze(sol, a, re, mach, sc.transition) for a in grid]
+    else:
+        # 지면 효과: 받음각마다 날개를 메인 앞전 기준으로 회전해 지면 거울상과 함께 푼다 (유동은 수평).
+        downforce = bool(params.get("downforce"))
+        sign = -1.0 if downforce else 1.0
+        pts = []
+        for a in grid:
+            key = (repr(sorted(params.items())), float(a))
+            if key not in cache:
+                try:
+                    g = build_geometry({**params, "aoa": float(a)}, root)
+                except ConfigError:
+                    cache[key] = None  # 이 받음각에서는 지면과 겹침
+                else:
+                    cache[key] = (g, solve_inviscid(g, sc.n_side, ground_y=g.info["ground_y"]))
+            if cache[key] is None:
+                continue
+            geom, sol = cache[key]
+            p = analyze(sol, 0.0, re, mach, sc.transition, suction_lower=downforce)
+            pts.append(replace(p, alpha=float(a), cl=sign * p.cl, cl_elements=[sign * c for c in p.cl_elements]))
+        if not pts:
+            raise ConfigError("모든 받음각에서 날개가 지면과 겹칩니다.")
+        grid = np.array([p.alpha for p in pts])
 
     sep = np.array([p.sep_upper[0] for p in pts])
     a_stall = _stall_alpha(grid, sep, sc.sep_limit)
@@ -118,6 +145,19 @@ def evaluate_geometry(params: dict, root: Path, case_alphas: list[float], re: fl
         "_polar": pts,
         "_by_alpha": by_alpha,
     }
+
+
+def _evaluate_task(gp: dict, root: Path, items: list, sc: ScreeningConfig, x_param: str) -> dict:
+    """한 형상의 모든 조건 평가 (병렬 작업 단위). 반환: {그룹 키: 결과 dict 또는 오류 메시지}."""
+    cache: dict = {}
+    out = {}
+    for key, alphas in items:
+        _, _, re, mach = key
+        try:
+            out[key] = evaluate_geometry(gp, root, alphas, re, mach, sc, x_param, cache)
+        except ConfigError as exc:
+            out[key] = str(exc)
+    return out
 
 
 def condition_label(cond: tuple) -> str:
@@ -151,25 +191,45 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
     varying = [k for k in all_keys if len({repr(_geometry_params(c).get(k)) for c in cases}) > 1]
     family_keys = [k for k in varying if not any(fnmatch(k, pat) for pat in sc.protect)]
 
+    # 형상별로 모든 조건(속도)을 한 작업으로 묶어 병렬 실행 (같은 형상의 비점성 해는 작업 안에서 재사용)
+    tasks: dict[str, list] = {}
+    for (gname, cond, re, mach), gcases in groups.items():
+        alphas = sorted({float(c.params[x_param]) for c in gcases})
+        tasks.setdefault(gname, []).append(((gname, cond, re, mach), alphas))
+    results: dict[tuple, dict | str] = {}
+    workers = sc.workers or os.cpu_count() or 1
+    args = [(_geometry_params(groups[items[0][0]][0]), cfg.root, items, sc, x_param) for items in tasks.values()]
+    done = 0
+    if workers > 1 and len(args) > 1:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            for fut in as_completed([pool.submit(_evaluate_task, *a) for a in args]):
+                results.update(fut.result())
+                done += 1
+                if done % 25 == 0 or done == len(args):
+                    log(f"  저충실도 해석 {done}/{len(args)} 형상 ({workers}개 프로세스)")
+    else:
+        for a in args:
+            results.update(_evaluate_task(*a))
+            done += 1
+            if done % 25 == 0 or done == len(args):
+                log(f"  저충실도 해석 {done}/{len(args)} 형상")
+
     geoms: list[dict] = []
-    cache: dict = {}
-    for i, ((gname, cond, re, mach), gcases) in enumerate(groups.items(), start=1):
+    for (gname, cond, re, mach), gcases in groups.items():
         gp = _geometry_params(gcases[0])
         row = {"geometry": gname, "condition": condition_label(cond), **dict(cond),
                **{k: gp.get(k, "") for k in varying}, "reynolds": re, "mach": mach,
                "family": ", ".join(f"{k}={gp.get(k)}" for k in family_keys) or "all",
                "n_cases": len(gcases)}
-        try:
-            row.update(evaluate_geometry(gp, cfg.root, [float(c.params[x_param]) for c in gcases],
-                                         re, mach, sc, x_param, cache))
+        res = results[(gname, cond, re, mach)]
+        if isinstance(res, str):
+            row.update(feasible=False, reason=f"형상 불가: {res}")
+        else:
+            row.update(res)
             row["feasible"] = True
-        except ConfigError as exc:
-            row.update(feasible=False, reason=f"형상 불가: {exc}")
         row["_cases"] = gcases
         row["_cond"] = cond
         geoms.append(row)
-        if i % 25 == 0 or i == len(groups):
-            log(f"  저충실도 해석 {i}/{len(groups)} (형상 × 조건)")
 
     # 조건(속도 등)마다 따로 계열 선별: 특정 조건에서만 좋은 계열도 그 조건에서는 유지
     conditions = list(dict.fromkeys(g["_cond"] for g in geoms))
@@ -268,11 +328,11 @@ def check_spot(selection: dict, ranking: list[dict]) -> list[str]:
     spot_geoms = {(s["geometry"], tuple(sorted(s["condition"].items()))) for s in selection.get("spot_check") or []}
     warnings = []
     for s in selection.get("spot_check") or []:
-        same = [r for r in ranking if r.get("mesh") and r.get(key) is not None
+        same = [r for r in ranking if r.get("geometry") and r.get(key) is not None
                 and all(r.get(k) == v for k, v in s["condition"].items())]
-        mine = [r for r in same if r["mesh"] == s["geometry"]]
+        mine = [r for r in same if r["geometry"] == s["geometry"]]
         others = [r[key] for r in same
-                  if (r["mesh"], tuple(sorted(s["condition"].items()))) not in spot_geoms]
+                  if (r["geometry"], tuple(sorted(s["condition"].items()))) not in spot_geoms]
         if mine and others and mine[0][key] > min(others):
             cond = condition_label(tuple(s["condition"].items()))
             warnings.append(

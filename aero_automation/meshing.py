@@ -40,6 +40,11 @@ class MeshSettings:
     wake_angles: list = None      # 뒷전에서 뻗는 후류선 각도 [deg] (받음각 범위를 덮도록)
     farfield_radius: float = 50.0 # 원거리 경계 반지름 [c]
     farfield_size: float = 5.0    # 원거리 경계 셀 크기 [c]
+    # 지면이 있을 때 (케이스 변수 ground_clearance): 직사각형 영역
+    ground_upstream: float = 5.0     # 메인 앞전 ~ inlet 거리 [c]
+    ground_downstream: float = 12.0  # 메인 앞전 ~ outlet 거리 [c]
+    ground_height: float = 6.0       # 지면 ~ 위쪽 경계(symmetry) 높이 [c]
+    ground_far_size: float = 0.5     # inlet/outlet/top 근처 셀 크기 [c]
     min_quality: float = 0.05     # 허용 최소 셀 품질 (0~1, 삼각형 SICN / 사각형 SJ)
 
     @classmethod
@@ -103,6 +108,8 @@ def mesh_name(params: dict) -> str:
         name += f"_c{_fmt(p['chord'])}"
     if p.get("downforce"):
         name += "_inv"
+    if "ground_clearance" in p:
+        name += f"_h{_fmt(p['ground_clearance'])}" + (f"_a{_fmt(p['aoa'])}" if "aoa" in p else "")
     return name
 
 
@@ -154,19 +161,37 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
 
     loops = [geo.addCurveLoop(c) for c in walls.values()]
 
-    R = s.farfield_radius
-    cx = 0.5
-    center = geo.addPoint(cx, 0, 0, lc)
-    ring = [geo.addPoint(cx + R * math.cos(a), R * math.sin(a), 0, lc)
-            for a in (0, math.pi / 2, math.pi, 3 * math.pi / 2)]
-    arcs = [geo.addCircleArc(ring[i], center, ring[(i + 1) % 4]) for i in range(4)]
-    outer = geo.addCurveLoop(arcs)
-    surface = geo.addPlaneSurface([outer, *loops])
+    ground_y = geom.info.get("ground_y")
+    if ground_y is None:
+        # 자유류: 원형 원거리 경계 하나 (pressure-far-field)
+        R = s.farfield_radius
+        far_size = s.farfield_size
+        grow = 0.5 * R  # 이 거리에 걸쳐 셀이 far_size까지 커짐
+        cx = 0.5
+        center = geo.addPoint(cx, 0, 0, lc)
+        ring = [geo.addPoint(cx + R * math.cos(a), R * math.sin(a), 0, lc)
+                for a in (0, math.pi / 2, math.pi, 3 * math.pi / 2)]
+        arcs = [geo.addCircleArc(ring[i], center, ring[(i + 1) % 4]) for i in range(4)]
+        outer_loop = geo.addCurveLoop(arcs)
+        outer = {"farfield": (arcs, "pressure-far-field")}
+    else:
+        # 지면 효과: 직사각형 영역. 아래 = 지면(wall, Fluent에서 moving wall), 앞 = inlet, 뒤 = outlet, 위 = symmetry
+        far_size = s.ground_far_size
+        grow = 3.0
+        x0, x1 = -s.ground_upstream, s.ground_downstream
+        y0, y1 = ground_y, ground_y + s.ground_height
+        c = [geo.addPoint(x, y, 0, lc) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+        bottom, right, top, left = (geo.addLine(c[i], c[(i + 1) % 4]) for i in range(4))
+        outer_loop = geo.addCurveLoop([bottom, right, top, left])
+        outer = {"ground": ([bottom], "wall"), "outlet": ([right], "pressure-outlet"),
+                 "top": ([top], "symmetry"), "inlet": ([left], "velocity-inlet")}
+    surface = geo.addPlaneSurface([outer_loop, *loops])
     geo.synchronize()
 
     for name, curves in walls.items():
         gmsh.model.addPhysicalGroup(1, curves, name=name)
-    gmsh.model.addPhysicalGroup(1, arcs, name="farfield")
+    for name, (curves, _) in outer.items():
+        gmsh.model.addPhysicalGroup(1, curves, name=name)
     gmsh.model.addPhysicalGroup(2, [surface], name="fluid")
 
     fld = gmsh.model.mesh.field
@@ -187,9 +212,9 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     near = fld.add("Threshold")
     fld.setNumber(near, "InField", dist)
     fld.setNumber(near, "SizeMin", s.near_size)
-    fld.setNumber(near, "SizeMax", s.farfield_size)
+    fld.setNumber(near, "SizeMax", far_size)
     fld.setNumber(near, "DistMin", 0.05)
-    fld.setNumber(near, "DistMax", 0.5 * R)
+    fld.setNumber(near, "DistMax", grow)
     fld.setNumber(near, "Sigmoid", 0)
 
     # 후류: 각 물체 뒷전에서 여러 각도로 뻗는 선 주변을 세분화 (받음각이 바뀌어도 메쉬 공유)
@@ -200,16 +225,19 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
         for ang in ([-a for a in s.wake_angles] if geom.info.get("downforce") else s.wake_angles):
             d = np.array([math.cos(math.radians(ang)), math.sin(math.radians(ang))])
             for k in np.arange(0.02, s.wake_length, s.wake_size * 2):
-                wake_pts.append(geo.addPoint(*(te + k * d), 0, lc))
+                x, y = te + k * d
+                if ground_y is not None and y < ground_y + 0.01:
+                    break  # 지면 아래로 내려가는 후류선은 자름
+                wake_pts.append(geo.addPoint(x, y, 0, lc))
     geo.synchronize()
     wake_dist = fld.add("Distance")
     fld.setNumbers(wake_dist, "PointsList", wake_pts)
     wake = fld.add("Threshold")
     fld.setNumber(wake, "InField", wake_dist)
     fld.setNumber(wake, "SizeMin", s.wake_size)
-    fld.setNumber(wake, "SizeMax", s.farfield_size)
+    fld.setNumber(wake, "SizeMax", far_size)
     fld.setNumber(wake, "DistMin", 0.02)
-    fld.setNumber(wake, "DistMax", 0.5 * R)
+    fld.setNumber(wake, "DistMax", grow)
     fld.setNumber(wake, "Sigmoid", 0)
 
     # 뒷전: 경계층 부채꼴(fan) 바깥 삼각형이 찌그러지지 않도록 경계층 두께보다 잘게 세분화
@@ -218,11 +246,27 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     te_ref = fld.add("Threshold")
     fld.setNumber(te_ref, "InField", te_all)
     fld.setNumber(te_ref, "SizeMin", min(s.near_size, max(bl_thickness / 5, 1e-4)))
-    fld.setNumber(te_ref, "SizeMax", s.farfield_size)
+    fld.setNumber(te_ref, "SizeMax", far_size)
     fld.setNumber(te_ref, "DistMin", 3 * bl_thickness)
-    fld.setNumber(te_ref, "DistMax", 0.5 * R)
+    fld.setNumber(te_ref, "DistMax", grow)
 
     size_fields = [near, wake, te_ref]
+    if ground_y is not None:
+        # 날개와 지면 사이 통로: 지상고의 1/8 크기로 세분화 (날개 아래 지면 구간)
+        h = max(min(float(el.xy[:, 1].min()) for el in geom.elements) - ground_y, 1e-3)
+        xs = np.concatenate([el.xy[:, 0] for el in geom.elements])
+        gpts = [geo.addPoint(x, ground_y, 0, lc)
+                for x in np.arange(xs.min() - 0.5, xs.max() + 1.5, min(s.near_size, h / 8))]
+        geo.synchronize()
+        g_dist = fld.add("Distance")
+        fld.setNumbers(g_dist, "PointsList", gpts)
+        g_ref = fld.add("Threshold")
+        fld.setNumber(g_ref, "InField", g_dist)
+        fld.setNumber(g_ref, "SizeMin", min(s.near_size, h / 8))
+        fld.setNumber(g_ref, "SizeMax", far_size)
+        fld.setNumber(g_ref, "DistMin", 1.2 * h)
+        fld.setNumber(g_ref, "DistMax", 1.0)
+        size_fields.append(g_ref)
     for i, flap in enumerate(geom.info.get("flaps", [])):
         # 슬롯 영역: 앞 요소 뒷전 주변을 그 슬롯의 최소 간격 기준으로 세분화
         gap = max(flap["clearance_c"], 1e-4)
@@ -231,7 +275,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
         slot = fld.add("Threshold")
         fld.setNumber(slot, "InField", te_dist)
         fld.setNumber(slot, "SizeMin", min(s.near_size, gap / 6))
-        fld.setNumber(slot, "SizeMax", s.farfield_size)
+        fld.setNumber(slot, "SizeMax", far_size)
         fld.setNumber(slot, "DistMin", 2 * gap + 0.01)
         fld.setNumber(slot, "DistMax", 0.3)
         size_fields.append(slot)
@@ -244,10 +288,10 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
     gmsh.option.setNumber("Mesh.Algorithm", 6)  # Frontal-Delaunay
-    return walls, arcs
+    return walls, outer
 
 
-def _extract(walls: dict, arcs: list) -> tuple[np.ndarray, list, list[Boundary], float]:
+def _extract(walls: dict, outer: dict) -> tuple[np.ndarray, list, list[Boundary], float]:
     import gmsh
 
     node_tags, coords, _ = gmsh.model.mesh.getNodes()
@@ -275,13 +319,13 @@ def _extract(walls: dict, arcs: list) -> tuple[np.ndarray, list, list[Boundary],
     cells = [tuple(remap[n] for n in c) for c in cells]
 
     boundaries = []
-    for name, curves in [*walls.items(), ("farfield", arcs)]:
+    named = [(n, c, "wall") for n, c in walls.items()] + [(n, c, bc) for n, (c, bc) in outer.items()]
+    for name, curves, bc in named:
         edges = []
         for c in curves:
             _, _, enodes1 = gmsh.model.mesh.getElements(1, c)
             for row in enodes1[0].reshape(-1, 2):
                 edges.append((remap[index[int(row[0])]], remap[index[int(row[1])]]))
-        bc = "pressure-far-field" if name == "farfield" else "wall"
         boundaries.append(Boundary(name, bc, edges))
     return nodes_xy, cells, boundaries, q_min
 
@@ -309,6 +353,9 @@ def _generate(job: MeshJob, root: Path, plots: bool) -> dict:
     max_bl = s.bl_thickness
     if len(geom.elements) > 1:
         max_bl = min(max_bl, s.gap_bl_fraction * geom.info["min_clearance"])
+    if geom.info.get("ground_y") is not None:
+        lowest = min(float(el.xy[:, 1].min()) for el in geom.elements)
+        max_bl = min(max_bl, s.gap_bl_fraction * (lowest - geom.info["ground_y"]))
 
     errors = []
     for attempt, factor in enumerate((1.0, 0.6, 0.35), start=1):
@@ -317,9 +364,9 @@ def _generate(job: MeshJob, root: Path, plots: bool) -> dict:
         try:
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.model.add(job.name)
-            walls, arcs = _build_gmsh_model(geom, s, bl_thickness)
+            walls, outer = _build_gmsh_model(geom, s, bl_thickness)
             gmsh.model.mesh.generate(2)
-            nodes, cells, boundaries, q_min = _extract(walls, arcs)
+            nodes, cells, boundaries, q_min = _extract(walls, outer)
         except Exception as exc:  # gmsh 내부 오류
             errors.append(f"시도 {attempt}: {exc}")
             continue

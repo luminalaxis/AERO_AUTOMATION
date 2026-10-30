@@ -1,6 +1,7 @@
-# 2D 다요소 다운포스 날개(뒤집힌 날개) 형상 최적화 예제: 2단(메인 + 플랩 1개)과 3단(메인 + 플랩 2개)
-#   길이 단위는 모두 mm (코드, 갭, 오버랩)
-#   메인 코드 300~450 mm, 플랩 코드 80~150 mm, 속도 40~100 km/h
+# 2D 다요소 다운포스 날개(뒤집힌 날개) 지면 효과 형상 최적화 예제: 2단(메인 + 플랩 1개)과 3단(메인 + 플랩 2개)
+#   길이 단위는 모두 mm (코드, 갭, 오버랩, 지상고)
+#   메인 코드 300~450 mm, 플랩 코드 80~150 mm, 지상고 30~60 mm, 속도 40~100 km/h
+#   지면은 움직이는 바닥(moving wall), 받음각은 메인 앞전 기준 회전
 #   aero-auto screen 으로 속도별 저충실도 선별 후 가망 있는 케이스만 CFD 실행
 
 [project]
@@ -21,24 +22,26 @@ timeout_minutes = 60
 [constants]                  # 모든 케이스 공통 (세트/스윕 값이 우선)
 downforce = true             # 뒤집힌 날개: 형상을 위아래로 뒤집고, 양의 aoa = 다운포스 증가 방향
                              # 결과의 cl 은 다운포스 계수(아래 방향 +), 힘은 downforce_N_per_m
+ground_ref = "lowest"        # 지상고 기준: "lowest" = 날개 최하단~지면, "main_le" = 메인 앞전~지면
 iterations = 2000
 
 [cases]
-group = "{case_set}_{main_airfoil}c{main_chord}"   # 분류 폴더: 세트 × 메인 형상
+group = "{case_set}_{main_airfoil}c{main_chord}_h{ground_clearance}"   # 분류 폴더: 세트 × 메인 형상 × 지상고
 
 [cases.sweep]                # 공통 스윕: 2단·3단 모두에 적용
 main_airfoil = ["2412", "4412"]  # NACA 4자리 또는 좌표 파일 (예: "airfoils/main.dat")
 main_chord = [300, 375, 450]     # 메인 코드 [mm]
-aoa = [0, 4, 8, 12, 16, 20]      # [deg] 다운포스가 커지는 방향 +. Fluent 유입 각도는 flow_angle = -aoa 로 자동 계산
+ground_clearance = [30, 40, 50, 60]  # 지상고 [mm]
+aoa = [0, 4, 8, 12, 16, 20]      # [deg] 다운포스가 커지는 방향 +. 메인 앞전을 중심으로 날개를 회전 (받음각별 메쉬)
 speed_kmh = [40, 60, 80, 100]    # 주행 속도 [km/h]
 
 # ---------------------------------------------------------------- 2단: 메인 + 플랩 1개
 [[cases.set]]
 label = "2el"
-name = "2el_{main_airfoil}c{main_chord}_f{flap1_chord}d{flap1_deflection}g{flap1_gap}_v{speed_kmh}_a{aoa}"
+name = "2el_{main_airfoil}c{main_chord}_f{flap1_chord}d{flap1_deflection}g{flap1_gap}_h{ground_clearance}_v{speed_kmh}_a{aoa}"
 
 [cases.set.constants]
-base_case = "base_2el.cas.h5"    # 경계 main, flap1, farfield 로 만든 베이스 케이스
+base_case = "base_2el.cas.h5"    # 경계 main, flap1, ground, inlet, outlet, top 으로 만든 베이스 케이스
 flap1_airfoil = "4412"
 flap1_overlap = 5                # [mm] 메인 뒷전 x - 플랩 앞쪽 끝 x
 
@@ -50,10 +53,10 @@ flap1_gap = [6, 10]              # [mm] 메인 뒷전 ~ 플랩 표면 최소 거
 # ---------------------------------------------------------------- 3단: 메인 + 플랩 2개
 [[cases.set]]
 label = "3el"
-name = "3el_{main_airfoil}c{main_chord}_f{flap1_chord}d{flap1_deflection}_f{flap2_chord}d{flap2_deflection}g{flap2_gap}_v{speed_kmh}_a{aoa}"
+name = "3el_{main_airfoil}c{main_chord}_f{flap1_chord}d{flap1_deflection}_f{flap2_chord}d{flap2_deflection}g{flap2_gap}_h{ground_clearance}_v{speed_kmh}_a{aoa}"
 
 [cases.set.constants]
-base_case = "base_3el.cas.h5"    # 경계 main, flap1, flap2, farfield 로 만든 베이스 케이스
+base_case = "base_3el.cas.h5"    # 경계 main, flap1, flap2, ground, inlet, outlet, top 으로 만든 베이스 케이스
 flap1_airfoil = "4412"
 flap1_gap = 6                    # [mm]
 flap1_overlap = 5                # [mm]
@@ -76,19 +79,23 @@ reynolds = "1.225 * velocity * chord / 1.7894e-5"    # 메인 코드 기준
 
 [mesh]                       # gmsh 자동 메쉬 (전체 항목은 README 참고)
 # chord, reynolds 는 케이스 변수에서 자동으로 가져옴
-# (형상이 같으면 속도와 무관하게 메쉬 공유, 첫 셀 높이는 최고 Re 기준 → 모든 속도에서 y+ ≤ 1)
+# (형상·지상고·받음각이 같으면 속도와 무관하게 메쉬 공유, 첫 셀 높이는 최고 Re 기준 → 모든 속도에서 y+ ≤ 1)
 y_plus = 1.0
 growth_rate = 1.15
 surface_cells = 200          # 메인 윗면/아랫면 각각
 flap_surface_cells = 150     # 플랩마다 윗면/아랫면 각각
-farfield_radius = 50         # [메인 코드]
+ground_upstream = 5          # 메인 앞전 ~ inlet [메인 코드]
+ground_downstream = 12       # 메인 앞전 ~ outlet [메인 코드]
+ground_height = 6            # 지면 ~ 위쪽 경계 [메인 코드]
 
 [screening]                  # CFD 전 저충실도 선별 (aero-auto screen), 속도별로 따로 선별
 transition = "free"          # Re 수십만은 천이 영향이 커서 자연 천이로 추정 (Fluent는 Transition SST 권장)
-protect = ["*gap", "*overlap", "main_chord", "chord"]
+protect = ["*gap", "*overlap", "main_chord", "chord", "ground_clearance"]
                              # 이 변수 값만으로는 제외하지 않음
                              #  gap/overlap: 슬롯 유동은 저충실도 예측이 부정확
                              #  main_chord: 길수록 Re가 커져 L/D가 항상 유리 → 크기 득실은 사람이 판단
+                             #  ground_clearance: 낮을수록 비점성 해석이 다운포스를 과대평가 → CFD로 확인
+aoa_step = 2.0               # 실속각 탐색 간격 [deg] (지면 모드는 받음각마다 형상을 다시 풀어서 간격을 넓힘)
 keep_top = 3                 # 점수 상위 3개 계열은 항상 유지
 keep_within = 0.05           # 최고 계열 대비 5% 이내면 유지
 spot_check = 1               # 제외된 계열 중 최상위 1개는 대표 케이스만 CFD로 검증

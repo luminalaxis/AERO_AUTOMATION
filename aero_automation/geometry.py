@@ -11,6 +11,9 @@
   - flapN_gap                    : 앞 요소 뒷전(아랫면 끝점)에서 플랩 표면까지의 최소 거리
   - downforce                    : true면 다운포스용으로 전체 형상을 위아래로 뒤집는다 (거울상).
                                    플랩은 앞 요소 뒷전의 위쪽에 놓이고 갭/오버랩/각도 정의는 거울상 그대로.
+  - ground_clearance             : 지상고. 있으면 지면을 두고, 받음각(aoa)만큼 날개 전체를 메인 앞전 기준으로
+                                   실제 회전시킨다 (유동은 지면과 평행). 양의 aoa = 다운포스(또는 양력) 증가 방향.
+  - ground_ref                   : 지상고 기준. "lowest"(기본) = 날개 최하단~지면, "main_le" = 메인 앞전~지면
 """
 
 from __future__ import annotations
@@ -183,8 +186,10 @@ FLAP_FIELDS = ("airfoil", "chord", "deflection", "gap", "overlap")
 
 def geometry_params(params: dict) -> dict:
     """케이스 변수 중 형상(메쉬)을 결정하는 것만 추린다."""
-    keys = ["main_airfoil", "main_chord", "chord", "downforce"]
+    keys = ["main_airfoil", "main_chord", "chord", "downforce", "ground_clearance", "ground_ref"]
     keys += [f"flap{i}_{f}" for i in range(1, MAX_FLAPS + 1) for f in FLAP_FIELDS]
+    if params.get("ground_clearance") not in (None, ""):
+        keys.append("aoa")  # 지면이 있으면 받음각마다 형상(메쉬)이 다르다
     return {k: params[k] for k in keys if k in params and params[k] not in ("", None)}
 
 
@@ -233,6 +238,26 @@ def build_geometry(params: dict, root: Path) -> Geometry:
     flapN_deflection은 메인 코드선 기준 절대각 [deg], 뒷전이 내려가는 방향이 +.
     flapN의 gap/overlap은 바로 앞 요소(main 또는 flap{N-1})의 뒷전 기준이다.
     """
+    # 플랩 배치(갭 맞추기)는 받음각·지상고와 무관하므로 단면 형상별로 캐시하고,
+    # 받음각 회전과 지면 배치만 매번 새로 한다 (지면 모드 스크리닝에서 받음각마다 반복 호출됨).
+    shape = {k: v for k, v in geometry_params(params).items() if k not in GROUND_KEYS}
+    key = (repr(sorted(shape.items())), str(root))
+    if key not in _SHAPE_CACHE:
+        if len(_SHAPE_CACHE) > 512:
+            _SHAPE_CACHE.clear()
+        _SHAPE_CACHE[key] = _build_shape(shape, root)
+    elements, info = _SHAPE_CACHE[key]
+    info = dict(info)
+    if params.get("ground_clearance") not in (None, ""):
+        elements = _place_over_ground(elements, params, info["main_chord"], info)
+    return Geometry(list(elements), info)
+
+
+GROUND_KEYS = ("aoa", "ground_clearance", "ground_ref")
+_SHAPE_CACHE: dict = {}
+
+
+def _build_shape(params: dict, root: Path) -> tuple[list[Element], dict]:
     main = load_section(params["main_airfoil"], root, "main")
     ref = float(params.get("main_chord", 1.0))
     elements = [main]
@@ -263,7 +288,36 @@ def build_geometry(params: dict, root: Path) -> Geometry:
         info["min_clearance"] = min(f["clearance_c"] for f in flaps)
     if info["downforce"]:
         elements = [mirror(el) for el in elements]
-    return Geometry(elements, info)
+    return elements, info
+
+
+def _place_over_ground(elements: list[Element], params: dict, ref: float, info: dict) -> list[Element]:
+    """메인 앞전 기준으로 받음각만큼 회전하고, 지상고에 맞춰 지면 위치(info["ground_y"])를 정한다."""
+    aoa = float(params.get("aoa", 0.0))
+    # 뒤집힌 날개는 반시계(앞전이 내려가는 쪽) 회전이 다운포스 증가, 똑바른 날개는 시계 회전이 양력 증가
+    ccw = aoa if info["downforce"] else -aoa
+    pivot = elements[0].xy[elements[0].le_index].copy()
+    elements = [el.transformed(angle_deg=-ccw, pivot=pivot) for el in elements]
+
+    h = float(params["ground_clearance"]) / ref
+    lowest = min(float(el.xy[:, 1].min()) for el in elements)
+    mode = params.get("ground_ref", "lowest")
+    if mode == "lowest":
+        ground_y = lowest - h
+    elif mode == "main_le":
+        ground_y = float(pivot[1]) - h
+        if lowest <= ground_y:
+            raise ConfigError(
+                f"메인 앞전 기준 지상고 {params['ground_clearance']}에서 날개가 지면과 겹칩니다 "
+                f"(최하단이 앞전보다 {(pivot[1] - lowest) * ref:.1f} 아래)."
+            )
+    else:
+        raise ConfigError(f"ground_ref는 'lowest' 또는 'main_le'이어야 합니다: {mode!r}")
+    info.update(ground_y=ground_y, aoa=aoa, ground_ref=mode,
+                ground_clearance=float(params["ground_clearance"]),
+                lowest_clearance=(lowest - ground_y) * ref,        # 날개 최하단~지면 (입력 단위)
+                main_le_height=(float(pivot[1]) - ground_y) * ref)  # 메인 앞전~지면 (입력 단위)
+    return elements
 
 
 def mirror(el: Element) -> Element:

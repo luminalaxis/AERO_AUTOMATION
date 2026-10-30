@@ -120,9 +120,9 @@ def main_cli(cfg_path, *args):
 def test_check_spot_warns_when_pruned_geometry_wins():
     selection = {"metric": "ld_max_est",
                  "spot_check": [{"geometry": "geoB", "condition": {"v": 40}, "cases": ["b_a4"]}]}
-    ranking = [{"mesh": "geoA", "v": 40, "ld_max": 80.0}, {"mesh": "geoC", "v": 40, "ld_max": 60.0},
-               {"mesh": "geoB", "v": 40, "ld_max": 70.0},
-               {"mesh": "geoC", "v": 100, "ld_max": 10.0}]  # 다른 속도는 비교 대상 아님
+    ranking = [{"geometry": "geoA", "v": 40, "ld_max": 80.0}, {"geometry": "geoC", "v": 40, "ld_max": 60.0},
+               {"geometry": "geoB", "v": 40, "ld_max": 70.0},
+               {"geometry": "geoC", "v": 100, "ld_max": 10.0}]  # 다른 속도는 비교 대상 아님
     warnings = check_spot(selection, ranking)
     assert len(warnings) == 1 and "geoB" in warnings[0] and "v=40" in warnings[0]
     ranking[2]["ld_max"] = 50.0

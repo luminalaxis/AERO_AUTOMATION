@@ -107,11 +107,15 @@ def build_cases(cfg: ProjectConfig) -> list[Case]:
 
 def _set_flow_angle(cases: list[Case], x_param: str) -> None:
     """Fluent 유입 각도 flow_angle [deg]. 다운포스(뒤집힌) 날개는 양의 받음각이 다운포스를
-    키우는 방향이 되도록 flow_angle = -aoa 로 둔다. 저널은 ${flow_angle}을 쓴다."""
+    키우는 방향이 되도록 flow_angle = -aoa 로 둔다. 저널은 ${flow_angle}을 쓴다.
+    지면이 있으면 받음각은 형상 회전으로 반영하고 유동은 지면과 평행하므로 flow_angle = 0."""
     for c in cases:
         a = c.params.get(x_param)
         if isinstance(a, (int, float)) and "flow_angle" not in c.params:
-            c.params["flow_angle"] = -a if c.params.get("downforce") else a
+            if c.params.get("ground_clearance") not in (None, ""):
+                c.params["flow_angle"] = 0.0
+            else:
+                c.params["flow_angle"] = -a if c.params.get("downforce") else a
 
 
 def _attach_meshes(cases: list[Case], cfg: ProjectConfig) -> None:

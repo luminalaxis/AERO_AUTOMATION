@@ -2,17 +2,18 @@
 
 아 귀찮은 케이스 분류 해석 자동화 할겁니다
 
-2D **다요소 날개(메인 + 슬롯 플랩 1~2개)** 형상 최적화를 위한 ANSYS Fluent 배치 해석 자동화 도구입니다. 예제는 **다운포스용 뒤집힌 날개**입니다.
-2단(메인 + 플랩 1개)·3단(메인 + 플랩 2개) 구성의 형상(익형, 요소별 코드 길이, 플랩 각도, 갭, 오버랩) × 받음각 × 속도 케이스를 만들고, **저충실도 해석으로 가망 없는 케이스를 미리 걸러낸 뒤**, 형상마다 메쉬를 자동 생성해 Fluent로 돌리고 Cl/Cd 정리, 형상 순위, 이미지 저장까지 한 번에 처리합니다.
+2D **다요소 날개(메인 + 슬롯 플랩 1~2개)** 형상 최적화를 위한 ANSYS Fluent 배치 해석 자동화 도구입니다. 예제는 **지면 효과를 받는 다운포스용 뒤집힌 날개**(움직이는 바닥, 지상고 30~60 mm)입니다.
+2단(메인 + 플랩 1개)·3단(메인 + 플랩 2개) 구성의 형상(익형, 요소별 코드 길이, 플랩 각도, 갭, 오버랩) × 지상고 × 받음각 × 속도 케이스를 만들고, **저충실도 해석으로 가망 없는 케이스를 미리 걸러낸 뒤**, 형상마다 메쉬를 자동 생성해 Fluent로 돌리고 Cl/Cd 정리, 형상 순위, 이미지 저장까지 한 번에 처리합니다.
 
 ```
-project.toml (2단/3단 세트, 형상·받음각·속도 스윕)
-   │ screen 패널법 + 경계층 근사로 전 케이스 추정
+project.toml (2단/3단 세트, 형상·지상고·받음각·속도 스윕)
+   │ screen 패널법(+지면 거울상) + 경계층 근사로 전 케이스 추정 (병렬)
    │        → 민감도 그래프, 하위 형상 계열·실속 이후 받음각 제외 (세트·속도별, selection.json)
-   │ mesh   남은 형상만 gmsh 자동 메쉬 → Fluent .msh  (받음각·속도만 다른 케이스는 메쉬 공유)
+   │ mesh   남은 형상만 gmsh 자동 메쉬 → Fluent .msh  (속도만 다른 케이스는 메쉬 공유)
+   │        직사각형 영역: inlet / outlet / top / ground(moving wall)
    │        + geometry.png, mesh.png, mesh_slot1/2.png, mesh_le.png
    │ run    케이스별 저널 생성 → fluent 2ddp -t4 -hidden -i run.jou
-   │        (base_2el/3el.cas.h5 읽기 → 메쉬 교체 → aoa/mach/기준값 변경 → 계산 → 컨투어 이미지)
+   │        (base_2el/3el.cas.h5 읽기 → 메쉬 교체 → 속도/기준값 변경 → 계산 → 컨투어 이미지)
    │ collect
    ▼
 runs/screening/      저충실도 추정, 민감도 그래프, 선별 결과
@@ -83,14 +84,23 @@ aero-auto collect          # 결과 다시 정리 (summary, ranking, 그래프)
 | `flapN_overlap` | 앞 요소 뒷전 x − 플랩 앞쪽 끝 x [mm]. +면 플랩이 앞 요소 아래로 들어감 |
 | `chord` | 메인 코드 [m]. 메쉬 스케일, Re, 계수 기준 길이에 쓰임. 예제는 `[derived]`에서 `main_chord / 1000`으로 계산 |
 | `downforce` | `true`면 다운포스용 뒤집힌 날개 (아래 참고) |
+| `ground_clearance` | 지상고 [mm]. 있으면 지면 효과 해석 (아래 참고) |
+| `ground_ref` | 지상고 기준. `"lowest"`(기본) = 날개 최하단~지면, `"main_le"` = 메인 앞전~지면 |
 
 ### 다운포스 날개 (`downforce = true`)
 
 - 전체 형상(메인 + 플랩)을 위아래로 뒤집습니다. 플랩은 앞 요소 뒷전의 **위쪽**에 놓이고, 갭·오버랩·플랩 각도 정의는 거울상 그대로입니다. 메쉬 이름 끝에 `_inv`가 붙습니다.
 - **받음각 `aoa`는 다운포스가 커지는 방향이 +**입니다. Fluent에 넣는 실제 유입 각도는 `flow_angle = -aoa`로 자동 계산되고, 저널은 `${flow_angle}`을 씁니다.
 - 결과의 `cl`은 **다운포스 계수(아래 방향 +)**, `l/d`는 다운포스/항력, 힘은 `downforce_N_per_m`입니다. 요소별(`cl-main`, `cl-flap1` 등)도 같은 부호입니다.
-- 스크리닝은 자유류 조건이라 뒤집힌 날개가 똑바른 날개의 정확한 거울상입니다. 그래서 똑바른 형상을 같은 받음각으로 풀어 그 양력을 다운포스로 씁니다.
-- 지면 효과(지면과 가까운 프런트 윙 등)는 아직 넣지 않았습니다. 지금은 자유류(지면 없음) 해석입니다.
+- 지면이 없을 때(자유류)는 뒤집힌 날개가 똑바른 날개의 정확한 거울상이라, 스크리닝은 똑바른 형상의 양력을 다운포스로 씁니다.
+
+### 지면 효과 (`ground_clearance`)
+
+- **해석 영역:** 직사각형으로 바뀝니다. 앞 = `inlet`(velocity-inlet), 뒤 = `outlet`(pressure-outlet), 위 = `top`(symmetry), 아래 = `ground`(wall → Fluent에서 **moving wall**, 유입 속도와 같은 속도로 +x 방향). 크기는 `[mesh]`의 `ground_upstream`/`ground_downstream`/`ground_height`로 조절합니다.
+- **받음각:** **메인 앞전을 중심으로 날개 전체를 실제로 회전**합니다(뒤집힌 날개는 앞전이 내려가는 쪽이 +). 유동은 항상 지면과 평행해서 `flow_angle = 0`입니다. 그래서 받음각마다 메쉬가 따로 생기고, 속도만 다른 케이스는 메쉬를 공유합니다. 메쉬 이름 끝에 `_h<지상고>_a<받음각>`이 붙습니다.
+- **지상고 기준:** 기본(`ground_ref = "lowest"`)은 **회전한 날개의 최하단~지면 거리**입니다. `"main_le"`로 바꾸면 메인 앞전~지면 거리가 됩니다. 이 경우 뒤집힌 날개는 아랫면이 앞전보다 시위의 약 10% 아래로 내려와서, 낮은 지상고에서는 날개가 지면을 뚫는 케이스가 생기고 그 케이스는 형상 불가로 처리됩니다. `geometry.png`에 최하단 높이와 앞전 높이가 함께 표시됩니다.
+- **메쉬:** 날개와 지면 사이 통로를 지상고의 1/8 크기로 세분화합니다. 지면은 움직이는 바닥이라 지면 경계층은 따로 두지 않습니다.
+- **스크리닝:** 패널법에 지면 거울상(image method)을 넣어 지면 효과를 근사합니다. 지상고가 낮을수록 다운포스가 커지는 경향은 잡지만, 아주 낮은 지상고에서 점성 때문에 다운포스가 꺾이는 현상은 과소평가하므로 `ground_clearance`는 기본 보호 변수입니다(지상고 값만으로는 제외하지 않음).
 
 주어진 overlap에서 gap이 정확히 맞도록 플랩 높이를 자동으로 계산하고, 요소끼리 겹치거나 불가능한 조합이면 해당 형상만 실패 처리합니다. 앞선 모든 요소와의 실제 최소 간격은 `mesh_info.json`의 `flaps[].clearance`에 기록합니다.
 
@@ -214,10 +224,12 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 | `surface_cells`, `flap_surface_cells` | 200, 150 | 메인 / 플랩마다 윗면·아랫면 각각의 표면 셀 수 (앞전·뒷전에 집중) |
 | `near_size`, `wake_size` | 0.01, 0.01 | 물체 주변 / 후류 셀 크기 [메인 코드] |
 | `wake_length`, `wake_angles` | 3.0, [-10, 0, 10, 20] | 후류 세분화 길이와 방향 (받음각 범위를 덮도록) |
-| `farfield_radius`, `farfield_size` | 50, 5.0 | 원거리 경계 반지름과 셀 크기 [메인 코드] |
+| `farfield_radius`, `farfield_size` | 50, 5.0 | (지면 없을 때) 원거리 경계 반지름과 셀 크기 [메인 코드] |
+| `ground_upstream`, `ground_downstream`, `ground_height` | 5, 12, 6 | (지면 있을 때) 메인 앞전~inlet, 메인 앞전~outlet, 지면~위쪽 경계 [메인 코드] |
+| `ground_far_size` | 0.5 | (지면 있을 때) inlet/outlet/top 근처 셀 크기 [메인 코드] |
 | `min_quality` | 0.05 | 최소 셀 품질 (삼각형 SICN, 사각형 scaled Jacobian). 미달 시 경계층을 얇게 해서 재시도 |
 
-경계 이름은 `main`, `flap1`, `flap2`(wall), `farfield`(pressure-far-field), 셀 영역은 `fluid`입니다. 같은 구성(2단 또는 3단) 안에서는 이름이 같아서 Fluent에서 메쉬만 교체해도 설정이 유지됩니다. 슬롯마다(메인↔플랩1, 플랩1↔플랩2) 그 슬롯의 최소 간격 기준으로 세분화합니다.
+경계 이름은 `main`, `flap1`, `flap2`(wall)와, 지면이 있으면 `ground`(wall), `inlet`(velocity-inlet), `outlet`(pressure-outlet), `top`(symmetry), 지면이 없으면 `farfield`(pressure-far-field)입니다. 셀 영역은 `fluid`입니다. 같은 구성(2단 또는 3단) 안에서는 이름이 같아서 Fluent에서 메쉬만 교체해도 설정이 유지됩니다. 슬롯마다(메인↔플랩1, 플랩1↔플랩2) 그 슬롯의 최소 간격 기준으로 세분화합니다.
 `[mesh]` 항목과 같은 이름의 케이스 변수가 있으면 케이스 값이 우선합니다. 단 `reynolds`는 형상 안에서 가장 큰 값을 써서 속도가 달라도 메쉬를 공유합니다.
 
 메쉬 독립성은 기준 형상 하나로 `surface_cells`, `near_size` 등을 2~3단계 바꿔 Cl/Cd가 수렴하는지 확인한 뒤, 최적화 동안에는 설정을 고정하는 것을 권장합니다. 설정이 같아야 형상 간 비교에서 메쉬 차이로 생기는 노이즈가 줄어듭니다.
@@ -226,27 +238,36 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 
 해석 설정은 베이스 케이스에 해 두고, 케이스마다 메쉬만 바꿔 끼웁니다. 2단과 3단은 경계 구성이 달라서 **`base_2el.cas.h5`와 `base_3el.cas.h5`를 따로** 만듭니다(세트별 `base_case` 변수로 저널이 골라 읽음).
 
+아래는 예제(지면 효과) 기준입니다. 지면이 없는 프로젝트는 맨 아래 "지면이 없을 때"를 보세요.
+
 1. 해당 구성의 메쉬 하나를 Fluent 2D 배정밀도(2ddp)에서 엽니다: `File > Read > Mesh` → `runs/_meshes/<형상>/mesh.msh`
 2. `Mesh > Check`가 통과하는지 확인합니다. 단위는 m입니다.
-3. **Models**: Viscous → Transition SST (Re 수십만 대역 권장. 층류 박리 기포와 천이를 잡음) 또는 k-omega SST(완전 난류)
-4. **Materials**: air, Density = **ideal-gas**. pressure-far-field 경계조건은 ideal-gas가 필요합니다.
-5. **Named Expressions**: `flow_angle` = `0 [deg]`, `mach` = `0.08` (값은 저널이 케이스마다 바꿈. `flow_angle`은 실제 유입 각도로, 다운포스 날개는 `-aoa`가 들어감)
-6. **Boundary Conditions**
-   - `farfield` (pressure-far-field): Mach Number = `mach`, X-Component of Flow Direction = `cos(flow_angle)`, Y-Component = `sin(flow_angle)`
-   - `main`, `flap1`(, `flap2`): wall
-7. **Reference Values**: Compute from `farfield`, Length = 메인 코드(m), Area = 메인 코드 × 1 m (2D). 속도·길이·면적은 저널이 케이스마다 다시 설정합니다
-8. **Report Definitions**: Force 리포트를 Coefficient로 만듭니다.
-   - `cx`: Zones = 모든 wall / Force Vector = (1, 0)
-   - `cy`: Zones = 모든 wall / Force Vector = (0, 1)
+3. **General**: Pressure-Based, Steady
+4. **Models**: Viscous → Transition SST (Re 수십만 대역 권장. 층류 박리 기포와 천이를 잡음) 또는 k-omega SST(완전 난류)
+5. **Materials**: air, Density = **constant 1.225 kg/m³**, Viscosity = 1.7894e-05 (마하수 0.1 미만이라 비압축으로 충분)
+6. **Named Expressions**: `speed` = `27.78 [m/s]` (값은 저널이 케이스마다 바꿈)
+7. **Boundary Conditions**
+   - `inlet` (velocity-inlet): Velocity Magnitude = `speed`, 방향 Normal to Boundary, 난류 강도 0.5%, 점성비 10 정도
+   - `outlet` (pressure-outlet): Gauge Pressure = 0
+   - `top` (symmetry)
+   - `ground` (wall): **Moving Wall**, Absolute, Translational, Speed = `speed`, Direction = (1, 0). 바닥이 공기와 같은 속도로 +x 방향으로 움직이는 실제 주행 조건
+   - `main`, `flap1`(, `flap2`): wall (정지)
+8. **Reference Values**: Compute from `inlet`, Density = 1.225, Length = 메인 코드(m), Area = 메인 코드 × 1 m (2D). 속도·길이·면적은 저널이 케이스마다 다시 설정합니다
+9. **Report Definitions**: Force 리포트를 Coefficient로 만듭니다. **Zones에 `ground`는 넣지 마세요.**
+   - `cx`: Zones = 날개 wall 전부(main, flap1, flap2) / Force Vector = (1, 0)
+   - `cy`: Zones = 날개 wall 전부 / Force Vector = (0, 1)
    - `cx-main`, `cy-main`, `cx-flap1`, `cy-flap1`(, `cx-flap2`, `cy-flap2`): 각 요소만
    - Report File `coef-rfile`에 위 리포트를 모두 넣습니다.
 
-   cl/cd 대신 물체축 cx/cy를 쓰는 이유: 받음각마다 Fluent의 force vector를 바꿀 필요 없이 도구가 유입 각도 θ(`flow_angle`)로 `cl = cy·cosθ − cx·sinθ`, `cd = cx·cosθ + cy·sinθ`를 계산합니다. 다운포스 날개는 `cl` 부호를 바꿔 아래 방향을 +로 출력합니다 (`cl-flap1`, `cd-flap2` 등 요소별도 자동).
-9. **이미지용 그래픽 객체와 뷰**
+   cl/cd 대신 물체축 cx/cy를 쓰는 이유: 도구가 유입 각도 θ(`flow_angle`, 지면 모드는 0)로 `cl = cy·cosθ − cx·sinθ`, `cd = cx·cosθ + cy·sinθ`를 계산합니다. 다운포스 날개는 `cl` 부호를 바꿔 아래 방향을 +로 출력합니다 (`cl-flap1`, `cd-flap2` 등 요소별도 자동).
+10. **Solution**: Coupled, Pseudo Transient 권장 (지면 근처 수렴 안정). 초기화는 저널이 Hybrid로 합니다
+11. **이미지용 그래픽 객체와 뷰**
    - Contour `contour-pressure` (Pressure Coefficient), `contour-velocity` (Velocity Magnitude)
    - 날개 전체가 보이게 확대 → `View > Save View` 이름 `near`
    - 슬롯 부분 확대 → 이름 `slot`
-10. `File > Write > Case`로 프로젝트 폴더(`examples/flap_optimization/`)에 `base_2el.cas.h5` / `base_3el.cas.h5`로 저장합니다.
+12. `File > Write > Case`로 프로젝트 폴더(`examples/flap_optimization/`)에 `base_2el.cas.h5` / `base_3el.cas.h5`로 저장합니다.
+
+**지면이 없을 때(자유류):** 경계가 `farfield` 하나입니다. Density = ideal-gas, Named Expression `flow_angle`, `mach`를 만들고, `farfield`(pressure-far-field)에 Mach = `mach`, 방향 = (`cos(flow_angle)`, `sin(flow_angle)`)를 넣습니다. 저널은 `speed` 대신 `flow_angle`과 `mach`를 바꾸도록 씁니다(git 기록의 이전 `journal.jou` 참고).
 
 ### 파일럿 확인 순서
 

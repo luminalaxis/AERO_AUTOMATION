@@ -3,6 +3,8 @@
 - 비점성: Hess-Smith 패널법 (패널별 일정 소스 + 물체별 일정 와류, 물체마다 Kutta 조건)
 - 점성 근사: 적분 경계층 (Thwaites 층류 → Michel 천이 → Head 난류), Squire-Young 항력
 - 압축성: Prandtl-Glauert 보정
+- 지면 효과: 지면(y = ground_y)에 대한 거울상 물체(소스 같은 세기, 와류 반대 세기)로 지면 법선속도 0.
+  움직이는 바닥(지면 경계층 없음)과 같은 조건이다.
 
 경계층-비점성 상호작용, 슬롯의 합류 경계층(confluent BL)은 고려하지 않으므로
 절대값보다 형상 간 경향 비교용이다. 모든 길이는 메인익 시위 기준.
@@ -37,10 +39,10 @@ def panelize(el, n_side: int) -> np.ndarray:
 
 # ---------------------------------------------------------------- Hess-Smith
 
-def _influence(nodes: np.ndarray, pts: np.ndarray, self_start: int):
+def _influence(nodes: np.ndarray, pts: np.ndarray, self_start: int | None):
     """단위 세기 소스/와류 패널이 pts에 만드는 전역 속도 (u, v). 반환 shape (M, N).
 
-    pts[self_start + j]는 패널 j 자신의 중점이다.
+    pts[self_start + j]는 패널 j 자신의 중점이다 (None이면 자기 패널 없음: 거울상 계산용).
     """
     z1 = nodes[:-1, 0] + 1j * nodes[:-1, 1]
     z2 = nodes[1:, 0] + 1j * nodes[1:, 1]
@@ -50,8 +52,9 @@ def _influence(nodes: np.ndarray, pts: np.ndarray, self_start: int):
     zl = (zp[:, None] - z1[None]) / rot[None]  # 패널 국소 좌표
     lg = np.log(zl) - np.log(zl - L[None])     # ln(z/(z-L))
     # 자기 패널 중점: 반올림 오차로 로그 분기가 뒤집히지 않도록 해석값(바깥쪽 극한 -iπ)으로 고정
-    j = np.arange(len(L))
-    lg[self_start + j, j] = -1j * np.pi
+    if self_start is not None:
+        j = np.arange(len(L))
+        lg[self_start + j, j] = -1j * np.pi
     w_src = lg / (2 * np.pi) / rot[None]       # u - iv (전역)
     w_vor = -1j * lg / (2 * np.pi) / rot[None]  # 반시계 와류
     return (w_src.real, -w_src.imag), (w_vor.real, -w_vor.imag)
@@ -73,7 +76,8 @@ class InviscidSolution:
         return math.cos(a) * self.vt_x + math.sin(a) * self.vt_y
 
 
-def solve_inviscid(geom: Geometry, n_side: int = 80) -> InviscidSolution:
+def solve_inviscid(geom: Geometry, n_side: int = 80, ground_y: float | None = None) -> InviscidSolution:
+    """ground_y가 있으면 지면 효과 포함. 이때 자유류는 지면과 평행(x 방향)만 의미가 있다."""
     nodes = [panelize(el, n_side) for el in geom.elements]
     bodies, start = [], 0
     for nd in nodes:
@@ -95,6 +99,10 @@ def solve_inviscid(geom: Geometry, n_side: int = 80) -> InviscidSolution:
     us, vs, uv, vv = (np.zeros((N, N)) for _ in range(4))
     for b, nd in zip(bodies, nodes):
         (su, sv), (wu, wv) = _influence(nd, mid, b.start)
+        if ground_y is not None:
+            image = nd * (1.0, -1.0) + (0.0, 2 * ground_y)
+            (isu, isv), (iwu, iwv) = _influence(image, mid, None)
+            su, sv, wu, wv = su + isu, sv + isv, wu - iwu, wv - iwv
         us[:, b], vs[:, b], uv[:, b], vv[:, b] = su, sv, wu, wv
     Un = us * normal[:, :1] + vs * normal[:, 1:]      # 소스 → 법선 속도
     Ut = us * tangent[:, :1] + vs * tangent[:, 1:]
@@ -208,7 +216,7 @@ class PointResult:
     cd_elements: list[float]
     cp_min: list[float]          # 물체별 최소 Cp
     delta_cp: list[float]        # 물체별 압력 회복량 Cp_TE(윗면) - Cp_min (실속 지표)
-    sep_upper: list[float]       # 물체별 윗면 박리 비율
+    sep_upper: list[float]       # 물체별 흡입면(기본 윗면) 박리 비율
 
     @property
     def ld(self) -> float:
@@ -216,7 +224,8 @@ class PointResult:
 
 
 def analyze(sol: InviscidSolution, alpha: float, re: float, mach: float = 0.0,
-            transition: str = "turbulent") -> PointResult:
+            transition: str = "turbulent", suction_lower: bool = False) -> PointResult:
+    """suction_lower=True면 아래쪽 면을 흡입면으로 보고 박리·압력회복 지표를 계산 (뒤집힌 날개)."""
     a = math.radians(alpha)
     beta = math.sqrt(max(1 - mach**2, 0.05))
     vt = sol.vt(alpha)
@@ -246,8 +255,12 @@ def analyze(sol: InviscidSolution, alpha: float, re: float, mach: float = 0.0,
         cds.append(up.cd + lo.cd)
         cpb = cp[b]
         cpmins.append(float(cpb.min()))
-        dcps.append(float(cpb[-1] - cpb[i_st + 1:].min()))
-        seps.append(up.sep_fraction)
+        if suction_lower:  # 노드 순서: 뒷전 아랫면 → 앞전 → 뒷전 윗면
+            dcps.append(float(cpb[0] - cpb[: i_st + 1].min()))
+            seps.append(lo.sep_fraction)
+        else:
+            dcps.append(float(cpb[-1] - cpb[i_st + 1:].min()))
+            seps.append(up.sep_fraction)
     cl = sum(cls)
     return PointResult(alpha, cl, sum(cds), cls, cds, cpmins, dcps, seps)
 

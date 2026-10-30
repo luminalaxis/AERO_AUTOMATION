@@ -29,7 +29,14 @@ def plot_geometry(geom, path: Path, title: str = "") -> Path:
     for el in geom.elements:
         ax.fill(el.xy[:, 0], el.xy[:, 1], alpha=0.25)
         ax.plot(el.xy[:, 0], el.xy[:, 1], lw=1, label=el.name)
-    lines = [title] + [
+    ground_y = geom.info.get("ground_y")
+    if ground_y is not None:
+        allx = np.concatenate([el.xy[:, 0] for el in geom.elements])
+        ax.axhline(ground_y, color="k", lw=1.5)
+        ax.fill_between([allx.min() - 0.1, allx.max() + 0.1], ground_y - 0.03, ground_y, color="0.6", hatch="//")
+    lines = [title] + ([f"aoa={geom.info['aoa']:g}° (about main LE), ground clearance={geom.info['ground_clearance']:g} "
+                        f"({geom.info['ground_ref']}), lowest point={geom.info['lowest_clearance']:.3g}, "
+                        f"main LE height={geom.info['main_le_height']:.3g}"] if ground_y is not None else []) + [
         f"{f['name']}: {f['airfoil']} c={f['chord']:g}, δ={f['deflection']:g}°, gap={f['gap']:g}, "
         f"overlap={f['overlap']:g}, min clearance={f['clearance']:.3g}"
         for f in geom.info.get("flaps", [])
@@ -46,7 +53,9 @@ def plot_mesh(nodes: np.ndarray, cells: list, geom, out_dir: Path, title: str = 
     """전체 근거리 뷰 + 슬롯별(앞 요소 뒷전) 확대 뷰 + 메인 앞전 뷰."""
     allxy = np.vstack([el.xy for el in geom.elements])
     (x0, y0), (x1, y1) = allxy.min(0), allxy.max(0)
-    views = [("mesh.png", (x0 - 0.3, x1 + 0.6), (y0 - 0.35, y1 + 0.35))]
+    ground_y = geom.info.get("ground_y")
+    y_lo = ground_y - 0.02 if ground_y is not None else y0 - 0.35
+    views = [("mesh.png", (x0 - 0.3, x1 + 0.6), (y_lo, y1 + 0.35))]
     inverted = geom.info.get("downforce", False)
     for i, flap in enumerate(geom.info.get("flaps", []), start=1):
         prev = geom.elements[i - 1]
