@@ -160,6 +160,9 @@ def collect(cfg: ProjectConfig, cases: list[Case], plots: bool = True) -> dict:
     if ranking:
         result["ranking"] = _write_csv(out_dir / "ranking.csv", ranking)
         result["top"] = ranking[:5]
+    from .screening import check_spot, load_selection
+    selection = load_selection(cfg)
+    result["warnings"] = check_spot(selection, ranking) if selection else []
 
     if plots:
         from .plots import plot_convergence, plot_summary
@@ -168,4 +171,28 @@ def collect(cfg: ProjectConfig, cases: list[Case], plots: bool = True) -> dict:
             if files:
                 plot_convergence(files, case.dir / "convergence.png", title=case.name)
         result["plots"] = plot_summary(rows, out_dir / "plots", cfg.results.x_param, keys)
+        result["plots"] += _screening_comparison(rows, out_dir)
     return result
+
+
+def _screening_comparison(rows: list[dict], out_dir: Path) -> list[Path]:
+    """스크리닝 추정값과 CFD 결과 비교 그래프 (스크리닝을 얼마나 믿을지 판단용)."""
+    from .plots import plot_screening_vs_cfd
+    from .screening import SCREEN_DIR
+
+    est_file = out_dir / SCREEN_DIR / "cases.csv"
+    if not est_file.is_file():
+        return []
+    with est_file.open(encoding="utf-8-sig") as f:
+        est = {r["case"]: r for r in csv.DictReader(f)}
+    saved = []
+    for key, label in (("cl", "Cl"), ("l/d", "L/D")):
+        est_key = "cl_est" if key == "cl" else "ld_est"
+        pairs = [(float(est[r["case"]][est_key]), r[key], r["case"]) for r in rows
+                 if r.get("state") == "done" and isinstance(r.get(key), float)
+                 and est.get(r["case"], {}).get(est_key) not in (None, "")]
+        name = "screening_vs_cfd_cl.png" if key == "cl" else "screening_vs_cfd_ld.png"
+        path = plot_screening_vs_cfd(pairs, out_dir / "plots" / name, label)
+        if path:
+            saved.append(path)
+    return saved

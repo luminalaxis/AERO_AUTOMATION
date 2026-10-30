@@ -202,7 +202,7 @@ def build_geometry(params: dict, root: Path) -> Geometry:
         return float(signed_distance(te, xy)[0])
 
     # 플랩을 아래로 내리며(h 증가) 메인익 뒷전까지 거리가 gap이 되는 위치를 찾는다.
-    hs = np.linspace(-0.5 * c_f, 1.0 * c_f + gap, 1500)
+    hs = np.linspace(-0.5 * c_f, 1.0 * c_f + gap, 300)
     ds = np.array([dist(h) for h in hs])
     i0 = int(np.argmin(ds))
     above = np.nonzero(ds[i0:] >= gap)[0]

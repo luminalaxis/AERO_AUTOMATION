@@ -64,6 +64,7 @@ class ProjectConfig:
     derived: dict[str, str]
     max_parallel: int
     mesh: dict | None
+    screening: dict | None
     solver: SolverConfig
     results: ResultsConfig
 
@@ -115,6 +116,7 @@ def load_config(path: str | Path) -> ProjectConfig:
         derived=data.get("derived", {}),
         max_parallel=int(project.get("max_parallel", 1)),
         mesh=data.get("mesh"),
+        screening=data.get("screening"),
         solver=solver,
         results=results,
     )

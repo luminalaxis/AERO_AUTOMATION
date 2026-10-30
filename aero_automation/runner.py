@@ -152,6 +152,14 @@ def _write_status(case: Case, **status) -> None:
     )
 
 
+def mark_screened(case: Case, reason: str) -> None:
+    """스크리닝에서 제외된 케이스 표시 (이미 해석이 끝난 케이스는 그대로 둔다)."""
+    if read_status(case).get("state") == "done":
+        return
+    case.dir.mkdir(parents=True, exist_ok=True)
+    _write_status(case, state="screened", message=reason)
+
+
 def _kill_tree(proc: subprocess.Popen) -> None:
     # Fluent는 런처 아래로 cortex/MPI 프로세스를 띄우므로 트리 전체를 종료해야 한다.
     if IS_WINDOWS:

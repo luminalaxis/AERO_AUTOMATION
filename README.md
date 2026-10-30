@@ -3,16 +3,19 @@
 아 귀찮은 케이스 분류 해석 자동화 할겁니다
 
 2D **메인익 + 슬롯 플랩** 형상 최적화를 위한 ANSYS Fluent 배치 해석 자동화 도구입니다.
-형상(익형, 플랩 각도, 갭, 오버랩) × 받음각 케이스를 만들고, 형상마다 메쉬를 자동 생성해 Fluent로 돌린 뒤 Cl/Cd 정리, 형상 순위, 이미지 저장까지 한 번에 처리합니다.
+형상(익형, 플랩 각도, 갭, 오버랩) × 받음각 케이스를 만들고, **저충실도 해석으로 가망 없는 케이스를 미리 걸러낸 뒤**, 형상마다 메쉬를 자동 생성해 Fluent로 돌리고 Cl/Cd 정리, 형상 순위, 이미지 저장까지 한 번에 처리합니다.
 
 ```
 project.toml (형상·받음각 스윕)
-   │ mesh   형상별로 gmsh 자동 메쉬 → Fluent .msh  (받음각만 다른 케이스는 메쉬 공유)
+   │ screen 패널법 + 경계층 근사로 전 케이스 추정 (형상당 0.3초)
+   │        → 민감도 그래프, 하위 형상 계열·실속 이후 받음각 제외 (selection.json)
+   │ mesh   남은 형상만 gmsh 자동 메쉬 → Fluent .msh  (받음각만 다른 케이스는 메쉬 공유)
    │        + geometry.png, mesh.png, mesh_slot.png, mesh_le.png
    │ run    케이스별 저널 생성 → fluent 2ddp -t4 -hidden -i run.jou
    │        (base.cas.h5 읽기 → 메쉬 교체 → aoa/mach 변경 → 계산 → 컨투어 이미지 저장)
    │ collect
    ▼
+runs/screening/      저충실도 추정, 민감도 그래프, 선별 결과
 runs/summary.csv     케이스별 조건 + Cl, Cd, L/D (+ 메인익/플랩 각각)
 runs/ranking.csv     형상별 최대 Cl, 최대 L/D 순위
 runs/plots/          Cl-α, Cd-α, L/D-α, 극곡선
@@ -36,15 +39,19 @@ cd examples/flap_optimization
 ```
 
 ```bash
-aero-auto plan --dry-run   # 케이스 목록 확인 (30개 = 형상 6 × 받음각 5)
+aero-auto plan --dry-run   # 케이스 목록 확인 (288개 = 메인익 4 × 플랩 2 × 플랩각 2 × 갭 3 × 받음각 6)
 ```
 
 ```bash
-aero-auto mesh             # 형상 6개 메쉬 생성 (각 10초 내외) + 이미지
+aero-auto screen           # 저충실도 선별 (예제: 288개 → 92개, 약 15초)
 ```
 
 ```bash
-aero-auto run              # 메쉬 확인 → Fluent 배치 실행 → 결과 정리
+aero-auto mesh             # 남은 형상만 메쉬 생성 (각 10초 내외) + 이미지
+```
+
+```bash
+aero-auto run              # 메쉬 확인 → 남은 케이스만 Fluent 배치 실행 → 결과 정리
 ```
 
 ```bash
@@ -55,10 +62,56 @@ aero-auto status           # 진행 상태
 aero-auto collect          # 결과 다시 정리 (summary, ranking, 그래프)
 ```
 
-- `--only "d20_g0.01*"`: 일부 케이스만 실행 (와일드카드, 그룹 이름도 가능)
+- `--only "2412-4412_d20*"`: 일부 케이스만 실행 (와일드카드, 그룹 이름도 가능)
 - `-j 2`: 동시 실행 수 (라이선스와 코어 수 고려)
 - 중단돼도 다시 `run` 하면 완료된 케이스와 이미 만든 메쉬는 건너뜁니다. 전부 다시 하려면 `run --force`, `mesh --force`.
+- `screen`을 한 번 돌리면 이후 `mesh`, `run`은 제외된 케이스를 자동으로 건너뜁니다(상태 `screened`). 스크리닝을 무시하려면 `--all`.
 - 실패 판정: 종료 코드, 로그의 `Error:` / `Divergence detected`, 시간 초과(`timeout_minutes`), 메쉬 생성 실패.
+
+## CFD 전 스크리닝 (`screen`)
+
+에어포일 종류를 여러 개 넣으면 조합이 금방 수백 개가 됩니다. `screen`은 Fluent를 돌리기 전에 모든 형상을 저충실도로 해석해서 민감도를 보여주고, 가망 없는 케이스를 미리 제외합니다.
+
+**해석 방법 (형상당 약 0.3초)**
+- 다요소 패널법(Hess-Smith): 비점성 Cl, Cp. NACA 0012 α=4°에서 Cl 0.478 등 이론값과 일치
+- 적분 경계층(Thwaites → Head)으로 Cd(Squire-Young)와 윗면 박리 위치 추정. 기본은 완전 난류(`transition = "turbulent"`)로 Fluent SST 설정과 맞춤
+- 실속각 추정: 메인익 윗면 박리 구간이 `sep_limit`(기본 10%)를 넘는 받음각
+
+**선별 규칙**
+1. **계열 선별:** `protect` 변수(기본 `gap`, `overlap`)를 제외한 나머지(익형 조합, 플랩각 등)가 같은 형상들을 한 계열로 묶고, 계열 안 최고 점수로 비교합니다. 상위 `keep_top`개 계열과 최고 대비 `keep_within` 이내 계열만 남깁니다. 점수는 `[results] objective`(최대 L/D 또는 최대 Cl)를 따릅니다.
+2. **보호 변수:** 슬롯 갭과 오버랩은 합류 경계층 같은 점성 효과가 커서 저충실도 예측이 부정확합니다. 그래서 이 값만으로는 제외하지 않고, 남은 계열 안에서는 모든 갭/오버랩을 CFD로 돌립니다.
+3. **받음각 선별:** 추정 실속각 + `aoa_margin`을 넘는 받음각은 제외합니다. 실속 이후 거동 확인용으로 넘는 첫 받음각 1개는 남깁니다.
+4. **스팟 체크:** 제외된 계열 중 최상위 `spot_check`개의 최고 형상은 받음각 1~2개만 CFD로 돌립니다. `collect`에서 이 형상이 CFD에서 남긴 형상보다 좋게 나오면 경고합니다. 이 경우 `keep_within`을 늘려 다시 `screen` 하세요.
+
+**결과물 (`runs/screening/`)**
+
+| 파일 | 내용 |
+|---|---|
+| `sensitivity_main_effects.png` | 변수 값별 점수 분포 (평균선, 최소~최대 범위, 형상별 점: 파랑=유지, 회색=제외) |
+| `sensitivity_importance.png` | 변수 중요도: 변수 값에 따른 평균 점수 변화 폭 |
+| `screening_polars.png` | 형상별 추정 Cl-α, L/D-α와 추정 실속각 |
+| `screening_scatter.png` | 형상별 추정 최대 Cl vs 최대 L/D |
+| `geometries.csv` | 형상별 추정 실속각, 최대 Cl, 최대 L/D, 계열 순위, 유지 여부와 이유 |
+| `cases.csv` | 케이스별 추정 Cl, Cd, L/D, 유지 여부와 이유 |
+| `selection.json` | `run`/`mesh`가 읽는 선별 결과 |
+
+CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cfd_ld.png`에 추정값과 CFD 결과의 상관을 그립니다. 첫 배치 결과로 스크리닝을 얼마나 믿을 수 있는지 확인하세요.
+
+**설정 (`[screening]`)**
+
+| 항목 | 기본값 | 내용 |
+|---|---|---|
+| `protect` | `["gap", "overlap"]` | 이 변수 값만으로는 제외하지 않음 |
+| `keep_top` | 3 | 항상 유지할 상위 계열 수 |
+| `keep_within` | 0.05 | 최고 계열 대비 이 비율 이내면 유지. 늘리면 안전하지만 절감이 줄어듦 |
+| `spot_check` | 1 | 제외 계열 검증용으로 대표 케이스만 돌릴 계열 수 |
+| `prune_aoa`, `aoa_margin` | true, 2.0 | 실속 이후 받음각 제외 여부와 여유각 |
+| `sep_limit` | 0.10 | 실속 판정 박리 구간 비율 |
+| `transition` | `"turbulent"` | `"free"`면 Michel 기준 자연 천이 |
+| `reynolds`, `mach` | 비움 | 비우면 케이스 변수 `reynolds`/`mach` → `[mesh] reynolds` 순으로 사용 |
+| `metric` | 비움 | `max_ld`/`max_cl`. 비우면 `[results] objective` |
+
+**한계:** 경계층과 비점성 유동의 상호작용, 슬롯의 합류 경계층, 실속 이후 유동은 고려하지 않습니다. 절대값(특히 고양력 형상의 Cl)은 CFD보다 높게 나오므로 **형상 간 상대 비교와 경향 확인용**으로만 쓰세요.
 
 ## 형상 정의
 
@@ -129,10 +182,10 @@ aero-auto collect          # 결과 다시 정리 (summary, ranking, 그래프)
 3. 케이스 하나만 배치로 돌려봅니다:
 
    ```bash
-   aero-auto run --only "d20_g0.01_a4"
+   aero-auto run --only "2412-4412_d20_g0.01_a4"
    ```
 
-4. `runs/d20_g0.01/d20_g0.01_a4/solver.log`에서 저널 명령이 오류 없이 실행됐는지, `img_*.png`가 저장됐는지 확인합니다.
+4. `runs/2412-4412_d20_g0.01/2412-4412_d20_g0.01_a4/solver.log`에서 저널 명령이 오류 없이 실행됐는지, `img_*.png`가 저장됐는지 확인합니다.
 
 저널(`journal.jou`)의 TUI 명령은 Fluent 버전에 따라 프롬프트가 다를 수 있습니다. 오류가 나면 GUI에서 `File > Write > Start Journal`로 같은 작업을 녹화해 해당 줄을 교체하세요. 특히 `/file/replace-mesh`, `/display/save-picture` 부분을 확인하면 됩니다.
 
@@ -173,4 +226,4 @@ pip install -e ".[dev]"
 pytest
 ```
 
-실제 Fluent 대신 가짜 솔버(`tests/fake_solver.py`)로 형상 배치 정확도, Fluent 메쉬 면 방향 규칙, 메쉬 생성부터 해석, cl/cd 변환, 순위, 그래프까지의 전체 흐름을 검증합니다.
+실제 Fluent 대신 가짜 솔버(`tests/fake_solver.py`)로 형상 배치 정확도, Fluent 메쉬 면 방향 규칙, 패널법 이론값, 스크리닝 선별과 실행 반영, 메쉬 생성부터 해석, cl/cd 변환, 순위, 그래프까지의 전체 흐름을 검증합니다.

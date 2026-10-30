@@ -1,5 +1,6 @@
 # 2D 메인익 + 슬롯 플랩 형상 최적화 예제
-#   형상(플랩 각도 × 갭) 6개 × 받음각 5개 = 30 케이스, 메쉬는 형상별로 6개만 생성
+#   메인익 4종 × 플랩 2종 × 플랩각 2 × 갭 3 = 형상 48개, × 받음각 6 = 288 케이스
+#   aero-auto screen 으로 저충실도 선별 후 가망 있는 케이스만 CFD 실행
 
 [project]
 name = "flap_optimization"
@@ -17,21 +18,28 @@ graphics = true              # Fluent 컨투어 이미지 저장 (Windows: -hidd
 timeout_minutes = 60
 
 [constants]                  # 모든 케이스 공통 (스윕 값이 우선)
-main_airfoil = "2412"        # NACA 4자리 또는 좌표 파일 경로 (예: "airfoils/main.dat")
-flap_airfoil = "4412"
 flap_chord = 0.3             # 플랩 시위 / 메인익 시위
 overlap = 0.01               # [c] 메인익 뒷전 x - 플랩 앞전 x
 mach = 0.15
 iterations = 2000
 
 [cases]
-name = "d{flap_deflection}_g{gap}_a{aoa}"
-group = "d{flap_deflection}_g{gap}"   # 형상별 분류 폴더
+name = "{main_airfoil}-{flap_airfoil}_d{flap_deflection}_g{gap}_a{aoa}"
+group = "{main_airfoil}-{flap_airfoil}_d{flap_deflection}_g{gap}"   # 형상별 분류 폴더
 
 [cases.sweep]                # 전체 조합으로 케이스 생성
+main_airfoil = ["0012", "2412", "4412", "6412"]  # NACA 4자리 또는 좌표 파일 (예: "airfoils/main.dat")
+flap_airfoil = ["4412", "6412"]
 flap_deflection = [20, 30]   # [deg] 뒷전 아래 방향 +
 gap = [0.01, 0.02, 0.03]     # [c] 메인익 뒷전 ~ 플랩 표면 최소 거리
-aoa = [0, 4, 8, 12, 16]      # [deg] 메쉬는 공유, Fluent에서 유입 방향만 변경
+aoa = [0, 4, 8, 12, 16, 20]  # [deg] 메쉬는 공유, Fluent에서 유입 방향만 변경
+
+[screening]                  # CFD 전 저충실도 선별 (aero-auto screen)
+protect = ["gap", "overlap"] # 이 변수 값만으로는 제외하지 않음 (슬롯 유동은 저충실도 예측이 부정확)
+keep_top = 3                 # 점수 상위 3개 계열(익형 조합 × 플랩각)은 항상 유지
+keep_within = 0.05           # 최고 계열 대비 5% 이내면 유지
+spot_check = 1               # 제외된 계열 중 최상위 1개는 대표 케이스만 CFD로 검증
+aoa_margin = 2.0             # 추정 실속각 + 2° 까지 해석 (넘는 첫 받음각 1개는 유지)
 
 [mesh]                       # gmsh 자동 메쉬 (전체 항목은 README 참고)
 chord = 1.0                  # 메인익 시위 [m]
