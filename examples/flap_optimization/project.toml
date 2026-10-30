@@ -1,7 +1,6 @@
-# 2D 메인익 + 슬롯 플랩 형상 최적화 예제
-#   메인익 4종 × 플랩 2종 × 플랩각 2 × 갭 3 × 코드 3 = 형상 144개
-#   × 받음각 6 × 속도 4 (40/60/80/100 km/h) = 3456 케이스
-#   메쉬는 형상(코드 포함)별 144개만 생성 (속도·받음각 공유)
+# 2D 다요소 날개 형상 최적화 예제: 2단(메인 + 플랩 1개)과 3단(메인 + 플랩 2개)
+#   길이 단위는 모두 mm (코드, 갭, 오버랩)
+#   메인 코드 300~450 mm, 플랩 코드 80~150 mm, 속도 40~100 km/h
 #   aero-auto screen 으로 속도별 저충실도 선별 후 가망 있는 케이스만 CFD 실행
 
 [project]
@@ -19,52 +18,84 @@ processes = 4
 graphics = true              # Fluent 컨투어 이미지 저장 (Windows: -hidden 으로 실행)
 timeout_minutes = 60
 
-[constants]                  # 모든 케이스 공통 (스윕 값이 우선)
-flap_chord = 0.3             # 플랩 시위 / 메인익 시위
-overlap = 0.01               # [c] 메인익 뒷전 x - 플랩 앞전 x
+[constants]                  # 모든 케이스 공통 (세트/스윕 값이 우선)
 iterations = 2000
 
 [cases]
-name = "{main_airfoil}-{flap_airfoil}_c{chord}_d{flap_deflection}_g{gap}_v{speed_kmh}_a{aoa}"
-group = "{main_airfoil}-{flap_airfoil}_c{chord}_d{flap_deflection}_g{gap}"   # 형상별 분류 폴더
+group = "{case_set}_{main_airfoil}c{main_chord}"   # 분류 폴더: 세트 × 메인 형상
 
-[cases.sweep]                # 전체 조합으로 케이스 생성
-main_airfoil = ["0012", "2412", "4412", "6412"]  # NACA 4자리 또는 좌표 파일 (예: "airfoils/main.dat")
-flap_airfoil = ["4412", "6412"]
-chord = [0.10, 0.12, 0.15]   # 메인익 코드(시위) 길이 [m] ← 실제 범위로 변경. 100 km/h에서 Re 약 19만/23만/29만
-flap_deflection = [20, 30]   # [deg] 뒷전 아래 방향 +
-gap = [0.01, 0.02, 0.03]     # [c] 메인익 뒷전 ~ 플랩 표면 최소 거리
-aoa = [0, 4, 8, 12, 16, 20]  # [deg] 메쉬는 공유, Fluent에서 유입 방향만 변경
-speed_kmh = [40, 60, 80, 100]  # 주행 속도 [km/h] → 아래 [derived]에서 Mach, Re 계산
+[cases.sweep]                # 공통 스윕: 2단·3단 모두에 적용
+main_airfoil = ["2412", "4412"]  # NACA 4자리 또는 좌표 파일 (예: "airfoils/main.dat")
+main_chord = [300, 375, 450]     # 메인 코드 [mm]
+aoa = [0, 4, 8, 12, 16, 20]      # [deg] 메쉬는 공유, Fluent에서 유입 방향만 변경
+speed_kmh = [40, 60, 80, 100]    # 주행 속도 [km/h]
 
+# ---------------------------------------------------------------- 2단: 메인 + 플랩 1개
+[[cases.set]]
+label = "2el"
+name = "2el_{main_airfoil}c{main_chord}_f{flap1_chord}d{flap1_deflection}g{flap1_gap}_v{speed_kmh}_a{aoa}"
+
+[cases.set.constants]
+base_case = "base_2el.cas.h5"    # 경계 main, flap1, farfield 로 만든 베이스 케이스
+flap1_airfoil = "4412"
+flap1_overlap = 5                # [mm] 메인 뒷전 x - 플랩 앞쪽 끝 x
+
+[cases.set.sweep]
+flap1_chord = [80, 115, 150]     # [mm]
+flap1_deflection = [20, 30]      # [deg] 메인 코드선 기준, 뒷전 아래 방향 +
+flap1_gap = [6, 10]              # [mm] 메인 뒷전 ~ 플랩 표면 최소 거리
+
+# ---------------------------------------------------------------- 3단: 메인 + 플랩 2개
+[[cases.set]]
+label = "3el"
+name = "3el_{main_airfoil}c{main_chord}_f{flap1_chord}d{flap1_deflection}_f{flap2_chord}d{flap2_deflection}g{flap2_gap}_v{speed_kmh}_a{aoa}"
+
+[cases.set.constants]
+base_case = "base_3el.cas.h5"    # 경계 main, flap1, flap2, farfield 로 만든 베이스 케이스
+flap1_airfoil = "4412"
+flap1_gap = 6                    # [mm]
+flap1_overlap = 5                # [mm]
+flap2_airfoil = "4412"
+flap2_overlap = 3                # [mm] 플랩1 뒷전 x - 플랩2 앞쪽 끝 x
+
+[cases.set.sweep]
+flap1_chord = [80, 150]          # [mm]
+flap1_deflection = [15, 25]      # [deg] 메인 코드선 기준 절대각
+flap2_chord = [80, 150]          # [mm]
+flap2_deflection = [35, 45]      # [deg] 메인 코드선 기준 절대각
+flap2_gap = [5, 8]               # [mm] 플랩1 뒷전 ~ 플랩2 표면 최소 거리
+
+# ---------------------------------------------------------------- 유동 조건
 [derived]                    # Fluent 기본 공기 물성 (15°C, 1 atm): ρ=1.225, μ=1.7894e-5, 음속 340.29 m/s
+chord = "main_chord / 1000"                           # 메인 코드 [m]: 메쉬 스케일, Re, 계수 기준 길이
 velocity = "speed_kmh / 3.6"                          # [m/s]
 mach = "velocity / 340.29"
-reynolds = "1.225 * velocity * chord / 1.7894e-5"    # 메인익 시위 기준
-
-[screening]                  # CFD 전 저충실도 선별 (aero-auto screen), 속도별로 따로 선별
-transition = "free"          # Re 10만대는 천이 영향이 커서 자연 천이로 추정 (Fluent는 Transition SST 권장)
-protect = ["gap", "overlap", "chord"]  # 이 변수 값만으로는 제외하지 않음
-                             #  gap/overlap: 슬롯 유동은 저충실도 예측이 부정확
-                             #  chord: 길수록 Re가 커져 L/D가 항상 유리 → 크기 득실은 사람이 판단
-keep_top = 3                 # 점수 상위 3개 계열(익형 조합 × 플랩각)은 항상 유지
-keep_within = 0.05           # 최고 계열 대비 5% 이내면 유지
-spot_check = 1               # 제외된 계열 중 최상위 1개는 대표 케이스만 CFD로 검증
-aoa_margin = 2.0             # 추정 실속각 + 2° 까지 해석 (넘는 첫 받음각 1개는 유지)
+reynolds = "1.225 * velocity * chord / 1.7894e-5"    # 메인 코드 기준
 
 [mesh]                       # gmsh 자동 메쉬 (전체 항목은 README 참고)
 # chord, reynolds 는 케이스 변수에서 자동으로 가져옴
-# (형상·코드가 같으면 속도와 무관하게 메쉬 공유, 첫 셀 높이는 최고 Re 기준 → 모든 속도에서 y+ ≤ 1)
+# (형상이 같으면 속도와 무관하게 메쉬 공유, 첫 셀 높이는 최고 Re 기준 → 모든 속도에서 y+ ≤ 1)
 y_plus = 1.0
 growth_rate = 1.15
-surface_cells = 200          # 메인익 윗면/아랫면 각각
-flap_surface_cells = 150
-farfield_radius = 50         # [c]
+surface_cells = 200          # 메인 윗면/아랫면 각각
+flap_surface_cells = 150     # 플랩마다 윗면/아랫면 각각
+farfield_radius = 50         # [메인 코드]
+
+[screening]                  # CFD 전 저충실도 선별 (aero-auto screen), 속도별로 따로 선별
+transition = "free"          # Re 수십만은 천이 영향이 커서 자연 천이로 추정 (Fluent는 Transition SST 권장)
+protect = ["*gap", "*overlap", "main_chord", "chord"]
+                             # 이 변수 값만으로는 제외하지 않음
+                             #  gap/overlap: 슬롯 유동은 저충실도 예측이 부정확
+                             #  main_chord: 길수록 Re가 커져 L/D가 항상 유리 → 크기 득실은 사람이 판단
+keep_top = 3                 # 점수 상위 3개 계열은 항상 유지
+keep_within = 0.05           # 최고 계열 대비 5% 이내면 유지
+spot_check = 1               # 제외된 계열 중 최상위 1개는 대표 케이스만 CFD로 검증
+aoa_margin = 2.0             # 추정 실속각 + 2° 까지 해석 (넘는 첫 받음각 1개는 유지)
 
 [results]
 report_files = ["*.out"]
 average_last = 100           # 마지막 100 iteration 평균
 x_param = "aoa"
-wind_axes = true             # cx, cy 리포트 → cl, cd 자동 변환
+wind_axes = true             # cx, cy 리포트 → cl, cd 자동 변환 (요소별 cx-flap1 등도)
 objective = "max_ld"         # 형상 순위: max_ld 또는 max_cl
 split_by = ["speed_kmh"]     # 속도별로 순위·그래프·스크리닝 선별을 따로 수행

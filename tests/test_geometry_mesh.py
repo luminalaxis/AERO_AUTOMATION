@@ -13,7 +13,7 @@ from aero_automation.fluent_msh import Boundary, check_msh, read_msh, write_msh
 from aero_automation.geometry import build_geometry, naca4, normalize, signed_distance
 
 FAKE_SOLVER = Path(__file__).with_name("fake_solver.py")
-FLAP = dict(main_airfoil="2412", flap_airfoil="4412", flap_chord=0.3, flap_deflection=25, overlap=0.01)
+FLAP = dict(main_airfoil="2412", flap1_airfoil="4412", flap1_chord=0.3, flap1_deflection=25, flap1_overlap=0.01)
 
 
 def test_naca4_normalized():
@@ -35,7 +35,7 @@ def test_read_dat_file(tmp_path):
 
 @pytest.mark.parametrize("gap", [0.01, 0.02, 0.035])
 def test_flap_gap_is_exact(gap):
-    geom = build_geometry({**FLAP, "gap": gap}, Path("."))
+    geom = build_geometry({**FLAP, "flap1_gap": gap}, Path("."))
     main, flap = geom.elements
     assert signed_distance(main.te_lower, flap.xy)[0] == pytest.approx(gap, abs=1e-6)
     assert geom.info["min_clearance"] > 0
@@ -45,7 +45,7 @@ def test_flap_gap_is_exact(gap):
 
 def test_impossible_gap_rejected():
     with pytest.raises(ConfigError):
-        build_geometry({**FLAP, "overlap": -0.05, "gap": 0.01}, Path("."))
+        build_geometry({**FLAP, "flap1_overlap": -0.05, "flap1_gap": 0.01}, Path("."))
 
 
 def test_fluent_msh_orientation(tmp_path):
@@ -80,7 +80,7 @@ def test_unassigned_boundary_rejected(tmp_path):
 
 def make_flap_project(tmp_path, gaps="[0.015, 0.02, 0.03]"):
     (tmp_path / "journal.jou").write_text(
-        "AOA=${aoa} GAP=${gap} MESH=${mesh_file}\n/solve/iterate ${iterations}\n", encoding="utf-8")
+        "AOA=${aoa} GAP=${flap1_gap} MESH=${mesh_file}\n/solve/iterate ${iterations}\n", encoding="utf-8")
     (tmp_path / "project.toml").write_text(textwrap.dedent(f"""
         [project]
         template = "journal.jou"
@@ -92,18 +92,18 @@ def make_flap_project(tmp_path, gaps="[0.015, 0.02, 0.03]"):
 
         [constants]
         main_airfoil = "2412"
-        flap_airfoil = "4412"
-        flap_chord = 0.3
-        flap_deflection = 25
-        overlap = 0.01
+        flap1_airfoil = "4412"
+        flap1_chord = 0.3
+        flap1_deflection = 25
+        flap1_overlap = 0.01
         iterations = 10
 
         [cases]
-        name = "g{{gap}}_a{{aoa}}"
-        group = "g{{gap}}"
+        name = "g{{flap1_gap}}_a{{aoa}}"
+        group = "g{{flap1_gap}}"
 
         [cases.sweep]
-        gap = {gaps}
+        flap1_gap = {gaps}
         aoa = [0, 5, 10]
 
         [mesh]   # 테스트용 거친 메쉬
@@ -131,10 +131,10 @@ def test_flap_pipeline_end_to_end(tmp_path, capsys):
     assert "형상 3개 중 3개 생성 필요" in out
 
     mesh_dir = cases[0].mesh.dir
-    for f in ("mesh.msh", "mesh_info.json", "geometry.png", "mesh.png", "mesh_slot.png"):
+    for f in ("mesh.msh", "mesh_info.json", "geometry.png", "mesh.png", "mesh_slot1.png"):
         assert (mesh_dir / f).is_file(), f
     info = json.loads((mesh_dir / "mesh_info.json").read_text(encoding="utf-8"))
-    assert set(info["zones"]) == {"interior-fluid", "main", "flap", "farfield"}
+    assert set(info["zones"]) == {"interior-fluid", "main", "flap1", "farfield"}
     assert info["min_quality"] > 0.05
     check = check_msh(mesh_dir / "mesh.msh")
     assert check["bad_cells"] == 0 and check["open_cells"] == 0
@@ -149,7 +149,7 @@ def test_flap_pipeline_end_to_end(tmp_path, capsys):
 
     with open(cfg.output_dir / "ranking.csv", encoding="utf-8-sig") as f:
         ranking = list(csv.DictReader(f))
-    assert [row["gap"] for row in ranking][0] == "0.02"  # 가상 해석에서 갭 0.02가 최적
+    assert [row["flap1_gap"] for row in ranking][0] == "0.02"  # 가상 해석에서 갭 0.02가 최적
     assert ranking[0]["rank"] == "1"
     for f in ("cl_alpha.png", "cd_alpha.png", "ld_alpha.png", "polar.png"):
         assert (cfg.output_dir / "plots" / f).is_file()
@@ -163,7 +163,7 @@ def test_flap_pipeline_end_to_end(tmp_path, capsys):
 
 def test_mesh_failure_marks_cases_failed(tmp_path):
     cfg_path = make_flap_project(tmp_path, gaps="[0.02]")
-    text = cfg_path.read_text().replace("overlap = 0.01", "overlap = -0.2")
+    text = cfg_path.read_text().replace("flap1_overlap = 0.01", "flap1_overlap = -0.2")
     cfg_path.write_text(text)
     assert main(["-c", str(cfg_path), "run"]) == 1
     cfg = load_config(cfg_path)

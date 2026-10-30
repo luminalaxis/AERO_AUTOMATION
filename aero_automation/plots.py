@@ -29,15 +29,12 @@ def plot_geometry(geom, path: Path, title: str = "") -> Path:
     for el in geom.elements:
         ax.fill(el.xy[:, 0], el.xy[:, 1], alpha=0.25)
         ax.plot(el.xy[:, 0], el.xy[:, 1], lw=1, label=el.name)
-    info = geom.info
-    if info.get("elements", 1) > 1:
-        ax.set_title(
-            f"{title}\nflap c={info['flap_chord']:g}, δ={info['flap_deflection']:g}°, "
-            f"gap={info['gap']:g}, overlap={info['overlap']:g}, min clearance={info['min_clearance']:.4f}",
-            fontsize=9,
-        )
-    else:
-        ax.set_title(title, fontsize=9)
+    lines = [title] + [
+        f"{f['name']}: {f['airfoil']} c={f['chord']:g}, δ={f['deflection']:g}°, gap={f['gap']:g}, "
+        f"overlap={f['overlap']:g}, min clearance={f['clearance']:.3g}"
+        for f in geom.info.get("flaps", [])
+    ]
+    ax.set_title("\n".join(lines), fontsize=9)
     ax.set_aspect("equal")
     ax.grid(alpha=0.3)
     ax.set_xlabel("x/c")
@@ -46,13 +43,14 @@ def plot_geometry(geom, path: Path, title: str = "") -> Path:
 
 
 def plot_mesh(nodes: np.ndarray, cells: list, geom, out_dir: Path, title: str = "") -> list[Path]:
-    """전체 근거리 뷰 + 슬롯(메인익 뒷전) 확대 뷰."""
-    main = geom.elements[0]
-    te = main.te_lower
-    views = [("mesh.png", (-0.3, 1.8), (-0.6, 0.5))]
-    if len(geom.elements) > 1:
-        r = max(0.04, 6 * geom.info["min_clearance"])
-        views.append(("mesh_slot.png", (te[0] - r, te[0] + r), (te[1] - r, te[1] + 0.6 * r)))
+    """전체 근거리 뷰 + 슬롯별(앞 요소 뒷전) 확대 뷰 + 메인 앞전 뷰."""
+    allxy = np.vstack([el.xy for el in geom.elements])
+    (x0, y0), (x1, y1) = allxy.min(0), allxy.max(0)
+    views = [("mesh.png", (x0 - 0.3, x1 + 0.6), (y0 - 0.35, y1 + 0.35))]
+    for i, flap in enumerate(geom.info.get("flaps", []), start=1):
+        te = geom.elements[i - 1].te_lower
+        r = max(0.04, 6 * flap["clearance_c"])
+        views.append((f"mesh_slot{i}.png", (te[0] - r, te[0] + r), (te[1] - r, te[1] + 0.6 * r)))
     views.append(("mesh_le.png", (-0.03, 0.05), (-0.035, 0.035)))
 
     polys = [nodes[list(c)] for c in cells]

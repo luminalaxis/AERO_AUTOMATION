@@ -1,13 +1,14 @@
-"""2D 익형 형상 생성: NACA 4자리 / 좌표 파일 + 슬롯 플랩 배치.
+"""2D 다요소 익형 형상 생성: NACA 4자리 / 좌표 파일 + 슬롯 플랩 N개 배치.
 
-좌표계: 메인익 시위 = 1, 앞전 = 원점, x는 뒷전 방향. 모든 길이는 메인익 시위 기준(c).
+좌표계: 메인 코드 = 1, 메인 앞전 = 원점, x는 뒷전 방향 (내부 계산은 메인 코드 기준 무차원).
 점 순서는 Selig 형식(뒷전 윗면 → 앞전 → 뒷전 아랫면)으로 통일한다.
 
-플랩 배치 정의 (일반적인 고양력 장치 정의):
-  - flap_chord      : 플랩 시위 / 메인익 시위
-  - flap_deflection : 플랩 각도 [deg], 뒷전이 내려가는 방향이 +
-  - overlap         : 메인익 뒷전 x - 플랩 앞전 x. +면 플랩 앞전이 메인익 뒷전보다 앞(아래)에 위치
-  - gap             : 메인익 뒷전(아랫면 끝점)에서 플랩 표면까지의 최소 거리
+입력 변수 (길이는 main_chord와 같은 단위, 예: mm):
+  - main_airfoil, main_chord
+  - flapN_airfoil, flapN_chord   : N번째 플랩 단면과 코드 길이 (N = 1, 2, ...)
+  - flapN_deflection             : 메인 코드선 기준 절대각 [deg], 뒷전이 내려가는 방향이 +
+  - flapN_overlap                : 앞 요소 뒷전 x - 플랩 앞쪽 끝 x. +면 플랩이 앞 요소 아래로 들어감
+  - flapN_gap                    : 앞 요소 뒷전(아랫면 끝점)에서 플랩 표면까지의 최소 거리
 """
 
 from __future__ import annotations
@@ -174,63 +175,87 @@ def body_clearance(a: np.ndarray, b: np.ndarray) -> float:
 
 # ---------------------------------------------------------------- 형상 조립
 
-def build_geometry(params: dict, root: Path) -> Geometry:
-    main = load_section(params["main_airfoil"], root, "main")
-    flap_spec = params.get("flap_airfoil")
-    if not flap_spec:
-        return Geometry([main], {"elements": 1})
+MAX_FLAPS = 3
+FLAP_FIELDS = ("airfoil", "chord", "deflection", "gap", "overlap")
 
-    try:
-        c_f = float(params["flap_chord"])
-        delta = float(params.get("flap_deflection", 0.0))
-        gap = float(params["gap"])
-        overlap = float(params.get("overlap", 0.0))
-    except KeyError as exc:
-        raise ConfigError(f"플랩 형상에 필요한 변수 {exc}가 없습니다.") from exc
-    if not (0 < c_f < 1.5):
-        raise ConfigError(f"flap_chord 값이 이상합니다: {c_f}")
-    if gap <= 0:
-        raise ConfigError(f"gap은 0보다 커야 합니다: {gap}")
 
-    flap0 = load_section(flap_spec, root, "flap").transformed(scale=c_f, angle_deg=delta)
-    te = main.te_lower
-    x_le = te[0] - overlap
-    base_shift = np.array([x_le - flap0.xy[:, 0].min(), te[1]])
+def geometry_params(params: dict) -> dict:
+    """케이스 변수 중 형상(메쉬)을 결정하는 것만 추린다."""
+    keys = ["main_airfoil", "main_chord", "chord"]
+    keys += [f"flap{i}_{f}" for i in range(1, MAX_FLAPS + 1) for f in FLAP_FIELDS]
+    return {k: params[k] for k in keys if k in params and params[k] not in ("", None)}
+
+
+def n_flaps(params: dict) -> int:
+    n = 0
+    while n < MAX_FLAPS and params.get(f"flap{n + 1}_airfoil") not in (None, ""):
+        n += 1
+    return n
+
+
+def _place_flap(section: Element, prev: Element, others: list[Element], ratio: float, delta: float,
+                gap: float, overlap: float, name: str) -> tuple[Element, float]:
+    """prev 요소의 뒷전 기준으로 플랩을 배치. (플랩, 앞선 모든 요소와의 최소 간격) 반환. 길이는 메인 코드 기준."""
+    flap0 = section.transformed(scale=ratio, angle_deg=delta)
+    te = prev.te_lower
+    base_shift = np.array([te[0] - overlap - flap0.xy[:, 0].min(), te[1]])
 
     def dist(h: float) -> float:
-        xy = flap0.xy + base_shift + (0.0, -h)
-        return float(signed_distance(te, xy)[0])
+        return float(signed_distance(te, flap0.xy + base_shift + (0.0, -h))[0])
 
-    # 플랩을 아래로 내리며(h 증가) 메인익 뒷전까지 거리가 gap이 되는 위치를 찾는다.
-    hs = np.linspace(-0.5 * c_f, 1.0 * c_f + gap, 300)
+    # 플랩을 아래로 내리며(h 증가) 앞 요소 뒷전까지 거리가 gap이 되는 위치를 찾는다.
+    hs = np.linspace(-0.5 * ratio, 1.0 * ratio + gap, 300)
     ds = np.array([dist(h) for h in hs])
     i0 = int(np.argmin(ds))
     above = np.nonzero(ds[i0:] >= gap)[0]
     if ds[i0] > gap or not above.size:
-        raise ConfigError(
-            f"gap={gap}를 만족하는 플랩 위치가 없습니다 (overlap={overlap}일 때 가능한 최소 간격 {ds[i0]:.4f}). "
-            "overlap을 줄이거나 gap을 늘리세요."
-        )
+        raise ConfigError(f"{name}: 주어진 overlap에서 gap을 만족하는 위치가 없습니다 "
+                          f"(가능한 최소 간격 {ds[i0]:.4f} c). overlap을 줄이거나 gap을 늘리세요.")
     lo, hi = hs[i0 + above[0] - 1], hs[i0 + above[0]]
     for _ in range(60):
         mid = 0.5 * (lo + hi)
         lo, hi = (mid, hi) if dist(mid) < gap else (lo, mid)
-    h = 0.5 * (lo + hi)
-    flap = Element("flap", flap0.xy + base_shift + (0.0, -h), flap0.le_index)
+    flap = Element(name, flap0.xy + base_shift + (0.0, -0.5 * (lo + hi)), flap0.le_index)
 
-    clearance = body_clearance(main.xy, flap.xy)
+    clearance = min(body_clearance(o.xy, flap.xy) for o in others)
     if clearance <= 0:
-        raise ConfigError(
-            f"메인익과 플랩이 겹칩니다 (gap={gap}, overlap={overlap}, deflection={delta}). "
-            "overlap을 줄이거나 gap을 늘리세요."
-        )
-    info = {
-        "elements": 2,
-        "gap": gap,
-        "overlap": overlap,
-        "flap_chord": c_f,
-        "flap_deflection": delta,
-        "min_clearance": clearance,  # 두 물체 사이 실제 최소 거리 (메인익 아랫면이 더 가까울 수 있음)
-        "flap_le": flap.xy[flap.le_index].tolist(),
-    }
-    return Geometry([main, flap], info)
+        raise ConfigError(f"{name}가 다른 요소와 겹칩니다 (gap/overlap/deflection 조합 확인).")
+    return flap, clearance
+
+
+def build_geometry(params: dict, root: Path) -> Geometry:
+    """메인 + 플랩 N개(flap1, flap2, ...) 다요소 형상.
+
+    길이(main_chord, flapN_chord, flapN_gap, flapN_overlap)는 모두 같은 단위(예: mm)로 받는다.
+    main_chord가 없으면 메인 코드 = 1로 보고 나머지를 메인 코드 대비 비율로 해석한다.
+    flapN_deflection은 메인 코드선 기준 절대각 [deg], 뒷전이 내려가는 방향이 +.
+    flapN의 gap/overlap은 바로 앞 요소(main 또는 flap{N-1})의 뒷전 기준이다.
+    """
+    main = load_section(params["main_airfoil"], root, "main")
+    ref = float(params.get("main_chord", 1.0))
+    elements = [main]
+    flaps = []
+    for i in range(1, n_flaps(params) + 1):
+        try:
+            chord = float(params[f"flap{i}_chord"])
+            gap = float(params[f"flap{i}_gap"])
+        except KeyError as exc:
+            raise ConfigError(f"플랩 {i} 형상에 필요한 변수 {exc}가 없습니다.") from exc
+        delta = float(params.get(f"flap{i}_deflection", 0.0))
+        overlap = float(params.get(f"flap{i}_overlap", 0.0))
+        if not 0 < chord / ref < 1.5:
+            raise ConfigError(f"flap{i}_chord 값이 이상합니다: {chord} (main_chord {ref})")
+        if gap <= 0:
+            raise ConfigError(f"flap{i}_gap은 0보다 커야 합니다: {gap}")
+        section = load_section(params[f"flap{i}_airfoil"], root, f"flap{i}")
+        flap, clearance = _place_flap(section, elements[-1], elements, chord / ref, delta,
+                                      gap / ref, overlap / ref, f"flap{i}")
+        elements.append(flap)
+        flaps.append({"name": f"flap{i}", "airfoil": str(params[f"flap{i}_airfoil"]), "chord": chord,
+                      "deflection": delta, "gap": gap, "overlap": overlap,
+                      "clearance": clearance * ref,  # 앞선 요소들과의 실제 최소 간격 (입력 단위)
+                      "clearance_c": clearance})     # 메인 코드 기준
+    info = {"elements": len(elements), "main_chord": ref, "flaps": flaps}
+    if flaps:
+        info["min_clearance"] = min(f["clearance_c"] for f in flaps)
+    return Geometry(elements, info)

@@ -61,6 +61,7 @@ class ProjectConfig:
     group: str | None
     cases_csv: Path | None
     sweep: dict[str, list]
+    case_sets: list[dict]  # [[cases.set]]: 세트별 label/constants/sweep/name/group (없으면 단일 세트)
     constants: dict
     derived: dict[str, str]
     max_parallel: int
@@ -98,11 +99,19 @@ def load_config(path: str | Path) -> ProjectConfig:
 
     cases_csv = cases.get("csv")
     sweep = cases.get("sweep", {})
-    if not cases_csv and not sweep:
-        raise ConfigError("[cases] csv 또는 [cases.sweep] 중 하나는 지정해야 합니다.")
-    for key, values in sweep.items():
-        if not isinstance(values, list) or not values:
-            raise ConfigError(f"[cases.sweep] {key}는 값 목록이어야 합니다.")
+    case_sets = cases.get("set", [])
+    if not cases_csv and not sweep and not case_sets:
+        raise ConfigError("[cases] csv, [cases.sweep], [[cases.set]] 중 하나는 지정해야 합니다.")
+    for where, sw in [("[cases.sweep]", sweep)] + [
+        (f"[[cases.set]] {s.get('label', i + 1)}", s.get("sweep", {})) for i, s in enumerate(case_sets)
+    ]:
+        for key, values in sw.items():
+            if not isinstance(values, list) or not values:
+                raise ConfigError(f"{where} sweep의 {key}는 값 목록이어야 합니다.")
+    for i, s in enumerate(case_sets):
+        unknown = set(s) - {"label", "constants", "sweep", "name", "group"}
+        if unknown:
+            raise ConfigError(f"[[cases.set]] {i + 1}번째에 알 수 없는 항목: {', '.join(sorted(unknown))}")
 
     return ProjectConfig(
         path=path,
@@ -113,6 +122,7 @@ def load_config(path: str | Path) -> ProjectConfig:
         group=cases.get("group"),
         cases_csv=(root / cases_csv).resolve() if cases_csv else None,
         sweep=sweep,
+        case_sets=case_sets,
         constants=data.get("constants", {}),
         derived=data.get("derived", {}),
         max_parallel=int(project.get("max_parallel", 1)),

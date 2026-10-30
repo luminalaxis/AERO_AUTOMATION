@@ -15,10 +15,8 @@ import numpy as np
 
 from .config import ConfigError, safe_name
 from .fluent_msh import Boundary, check_msh, write_msh
-from .geometry import Geometry, build_geometry
+from .geometry import Geometry, build_geometry, geometry_params, n_flaps
 
-# 형상(메쉬)을 구분하는 변수. chord는 단면 모양은 같아도 실제 크기(m)가 달라 메쉬를 따로 만든다.
-GEOMETRY_KEYS = ("main_airfoil", "flap_airfoil", "flap_chord", "flap_deflection", "gap", "overlap", "chord")
 MESH_FILE = "mesh.msh"
 INFO_FILE = "mesh_info.json"
 ERROR_FILE = "mesh_error.txt"
@@ -92,26 +90,24 @@ def _fmt(v) -> str:
     return Path(str(v)).stem if ("/" in str(v) or "." in str(v)) else str(v)
 
 
-def shape_name(params: dict) -> str:
-    """무차원 단면 형상 이름 (코드 길이 제외)."""
-    main = _fmt(params["main_airfoil"])
-    if not params.get("flap_airfoil"):
-        return main
-    return (f"{main}-{_fmt(params['flap_airfoil'])}_fc{_fmt(params['flap_chord'])}"
-            f"_d{_fmt(params.get('flap_deflection', 0))}_g{_fmt(params['gap'])}"
-            f"_ov{_fmt(params.get('overlap', 0))}")
-
-
 def mesh_name(params: dict) -> str:
-    """메쉬 이름: 단면 형상 + 코드 길이(케이스 변수 chord가 있을 때)."""
-    name = shape_name(params)
-    return f"{name}_c{_fmt(params['chord'])}" if params.get("chord") not in (None, "") else name
+    """메쉬(형상) 이름. 예: 2412c350_4412c120d20g7o5_4412c90d40g5o3
+    (요소별 익형 + c코드, 플랩은 d각도 g갭 o오버랩)"""
+    p = geometry_params(params)
+    name = _fmt(p["main_airfoil"]) + (f"c{_fmt(p['main_chord'])}" if "main_chord" in p else "")
+    for i in range(1, n_flaps(p) + 1):
+        name += (f"_{_fmt(p[f'flap{i}_airfoil'])}c{_fmt(p.get(f'flap{i}_chord', ''))}"
+                 f"d{_fmt(p.get(f'flap{i}_deflection', 0))}g{_fmt(p.get(f'flap{i}_gap', ''))}"
+                 f"o{_fmt(p.get(f'flap{i}_overlap', 0))}")
+    if "main_chord" not in p and "chord" in p:
+        name += f"_c{_fmt(p['chord'])}"
+    return name
 
 
 def make_job(params: dict, mesh_cfg: dict, meshes_dir: Path) -> MeshJob:
     if "main_airfoil" not in params:
         raise ConfigError("메쉬 생성에는 main_airfoil 변수가 필요합니다 ([constants] 또는 케이스에 지정).")
-    geo = {k: params[k] for k in GEOMETRY_KEYS if k in params and params[k] != ""}
+    geo = geometry_params(params)
     # [mesh] 항목과 같은 이름의 케이스 변수가 있으면 케이스 값 사용 (예: reynolds)
     merged = {**mesh_cfg, **{k: params[k] for k in mesh_cfg.keys() | {f.name for f in fields(MeshSettings)} if k in params}}
     settings = MeshSettings.from_dict(merged)
@@ -224,11 +220,11 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     fld.setNumber(te_ref, "DistMax", 0.5 * R)
 
     size_fields = [near, wake, te_ref]
-    if len(geom.elements) > 1:
-        # 슬롯 영역: 메인익 뒷전 주변을 최소 간격 기준으로 세분화
-        gap = max(geom.info["min_clearance"], 1e-4)
+    for i, flap in enumerate(geom.info.get("flaps", [])):
+        # 슬롯 영역: 앞 요소 뒷전 주변을 그 슬롯의 최소 간격 기준으로 세분화
+        gap = max(flap["clearance_c"], 1e-4)
         te_dist = fld.add("Distance")
-        fld.setNumbers(te_dist, "PointsList", te_points[:2])
+        fld.setNumbers(te_dist, "PointsList", te_points[2 * i: 2 * i + 2])
         slot = fld.add("Threshold")
         fld.setNumber(slot, "InField", te_dist)
         fld.setNumber(slot, "SizeMin", min(s.near_size, gap / 6))

@@ -3,8 +3,8 @@
 1. 형상별로 패널법 + 적분 경계층(panel.py)으로 Cl, Cd, 박리를 받음각에 따라 추정
 2. 형상 지표: 추정 실속각, 최대 Cl, 최대 L/D
 3. 계열 선별: `protect` 변수(기본 gap, overlap)를 뺀 나머지가 같은 형상을 한 계열로 묶고,
-   계열 안 최고 점수로 비교해 하위 계열을 제외. 슬롯 변수는 저충실도로 예측이 어려워
-   (합류 경계층 미고려) 그 값만으로는 제외하지 않는다.
+   계열 안 최고 점수로 비교해 하위 계열을 제외. 슬롯 변수(갭/오버랩)는 저충실도로 예측이 어렵고
+   (합류 경계층 미고려), 메인 코드는 길수록 Re가 커져 항상 유리하므로 그 값만으로는 제외하지 않는다.
 4. 받음각 선별: 추정 실속각 + 여유각을 넘는 받음각은 제외 (넘는 첫 받음각 1개는 유지)
 5. 스팟 체크: 제외된 계열 중 점수가 가장 높은 계열의 최고 형상을 받음각 1~2개만 CFD로 확인.
    collect 단계에서 이 형상이 CFD에서 남긴 형상보다 좋으면 경고 → 스크리닝 기준 완화 필요
@@ -16,6 +16,8 @@ from __future__ import annotations
 import csv
 import json
 import math
+import shutil
+from fnmatch import fnmatch
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -24,7 +26,8 @@ import numpy as np
 from .cases import Case
 from .config import ConfigError, ProjectConfig, safe_name
 from .geometry import build_geometry
-from .meshing import GEOMETRY_KEYS, mesh_name, shape_name
+from .geometry import geometry_params
+from .meshing import mesh_name
 from .panel import analyze, solve_inviscid
 
 SCREEN_DIR = "screening"
@@ -37,14 +40,14 @@ class ScreeningConfig:
     mach: float | None = None       # 비우면 케이스 변수 mach → 0
     transition: str = "turbulent"   # turbulent (Fluent SST 완전난류와 유사) / free
     metric: str | None = None       # max_ld / max_cl. 비우면 [results] objective
-    protect: list = field(default_factory=lambda: ["gap", "overlap"])
+    protect: list = field(default_factory=lambda: ["*gap", "*overlap", "main_chord", "chord"])  # 와일드카드 가능
     keep_top: int = 3               # 점수 상위 N개 계열은 항상 유지
     keep_within: float = 0.05       # 최고 계열 대비 이 비율 이내면 유지
     spot_check: int = 1             # 제외된 계열 중 상위 N개는 대표 케이스만 CFD로 검증
     prune_aoa: bool = True
     sep_limit: float = 0.10         # 메인익 윗면 박리 구간 비율이 이 값을 넘으면 실속으로 판정
     aoa_margin: float = 2.0         # 추정 실속각 + 이 값까지는 해석
-    aoa_step: float = 0.5           # 실속각 탐색 간격 [deg]
+    aoa_step: float = 1.0           # 실속각 탐색 간격 [deg] (사이 값은 보간)
     n_side: int = 80                # 물체당 윗면/아랫면 패널 수
 
     @classmethod
@@ -57,7 +60,7 @@ class ScreeningConfig:
 
 
 def _geometry_params(case: Case) -> dict:
-    return {k: case.params[k] for k in GEOMETRY_KEYS if k in case.params and case.params[k] != ""}
+    return geometry_params(case.params)
 
 
 def _flow(case: Case, cfg: ProjectConfig, sc: ScreeningConfig) -> tuple[float, float]:
@@ -83,7 +86,7 @@ def evaluate_geometry(params: dict, root: Path, case_alphas: list[float], re: fl
 
     비점성 해는 Re/Mach와 무관하므로 cache에 형상별로 저장해 조건(속도)마다 재사용한다.
     """
-    key = shape_name(params)  # 코드 길이는 무차원 해에 영향 없음 → 단면 형상별로 재사용
+    key = repr(sorted(params.items()))  # 같은 형상은 조건(속도)이 달라도 비점성 해 재사용
     if cache is not None and key in cache:
         geom, sol = cache[key]
     else:
@@ -107,8 +110,8 @@ def evaluate_geometry(params: dict, root: Path, case_alphas: list[float], re: fl
         f"{x_param}@cl_max_est": best_cl.alpha,
         "ld_max_est": best_ld.ld,
         f"{x_param}@ld_max_est": best_ld.alpha,
-        "flap_sep_est": max(p.sep_upper[1] for p in valid or pts[:1]) if len(geom.elements) > 1 else 0.0,
-        "min_clearance": geom.info.get("min_clearance", ""),
+        "flap_sep_est": max(max(p.sep_upper[1:]) for p in valid or pts[:1]) if len(geom.elements) > 1 else 0.0,
+        "min_clearance": min((f["clearance"] for f in geom.info["flaps"]), default=""),
         "_polar": pts,
         "_by_alpha": by_alpha,
     }
@@ -132,15 +135,18 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
     if missing:
         raise ConfigError(f"[results] split_by 변수가 케이스에 없습니다: {', '.join(missing)}")
 
-    # 형상 × 운용 조건(split_by, 예: 속도)별로 케이스 묶기
+    # 형상 × 운용 조건(split_by, 예: 속도)별로 케이스 묶기.
+    # 케이스 세트(예: 2단/3단)도 조건처럼 따로 선별한다: 구성이 다르면 L/D만으로 비교하기 어렵고
+    # (3단은 양력이 크지만 항력도 커서 L/D로는 항상 불리) 구성 간 비교는 CFD 결과로 해야 하기 때문.
+    cond_keys = (["case_set"] if any("case_set" in c.params for c in cases) else []) + list(split_by)
     groups: dict[tuple, list[Case]] = {}
     for c in cases:
-        cond = tuple((k, c.params[k]) for k in split_by)
+        cond = tuple((k, c.params.get(k)) for k in cond_keys)
         groups.setdefault((mesh_name(_geometry_params(c)), cond, *_flow(c, cfg, sc)), []).append(c)
 
-    varying = [k for k in GEOMETRY_KEYS
-               if len({repr(_geometry_params(c).get(k)) for c in cases}) > 1]
-    family_keys = [k for k in varying if k not in sc.protect]
+    all_keys = list(dict.fromkeys(k for c in cases for k in _geometry_params(c)))
+    varying = [k for k in all_keys if len({repr(_geometry_params(c).get(k)) for c in cases}) > 1]
+    family_keys = [k for k in varying if not any(fnmatch(k, pat) for pat in sc.protect)]
 
     geoms: list[dict] = []
     cache: dict = {}
@@ -232,7 +238,9 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
                 pruned[c.name] = reason
 
     out = cfg.output_dir / SCREEN_DIR
-    out.mkdir(parents=True, exist_ok=True)
+    if out.is_dir():
+        shutil.rmtree(out)  # 이전 스크리닝의 조건별 그래프 폴더가 섞이지 않도록
+    out.mkdir(parents=True)
     public = [{k: v for k, v in g.items() if not k.startswith("_")} for g in geoms]
     public.sort(key=lambda g: (g["condition"], not g["feasible"], -(g.get(score_key) or -math.inf)))
     _write_csv(out / "geometries.csv", public)
@@ -244,7 +252,7 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
     from .plots import plot_screening
     plots = []
     for cond in conditions:
-        sub = out if len(conditions) == 1 else out / safe_name(condition_label(cond))
+        sub = out if len(conditions) == 1 else out / safe_name("_".join(f"{k}={v}" for k, v in cond))
         plots += plot_screening([g for g in geoms if g["_cond"] == cond], varying, score_key, x_param,
                                 sc.protect, sub, title=condition_label(cond) if cond else "")
     return {"dir": out, "geometries": public, "kept": kept, "pruned": pruned, "plots": plots,

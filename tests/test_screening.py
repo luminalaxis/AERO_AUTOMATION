@@ -34,8 +34,8 @@ def test_separation_grows_with_alpha():
 
 def test_flap_adds_lift():
     single = polar(build_geometry({"main_airfoil": "2412"}, Path(".")), [4], re=3e6)[0]
-    two = polar(build_geometry(dict(main_airfoil="2412", flap_airfoil="4412", flap_chord=0.3,
-                                    flap_deflection=20, gap=0.02, overlap=0.01), Path(".")), [4], re=3e6)[0]
+    two = polar(build_geometry(dict(main_airfoil="2412", flap1_airfoil="4412", flap1_chord=0.3,
+                                    flap1_deflection=20, flap1_gap=0.02, flap1_overlap=0.01), Path(".")), [4], re=3e6)[0]
     assert two.cl > single.cl + 1.0
     assert len(two.cl_elements) == 2 and two.cl_elements[1] > 0
 
@@ -51,18 +51,18 @@ def make_project(tmp_path):
         command = ["${{python}}", "{FAKE_SOLVER.as_posix()}", "${{journal}}"]
 
         [constants]
-        flap_airfoil = "4412"
-        flap_chord = 0.3
-        flap_deflection = 20
-        overlap = 0.01
+        flap1_airfoil = "4412"
+        flap1_chord = 0.3
+        flap1_deflection = 20
+        flap1_overlap = 0.01
         mach = 0.15
 
         [cases]
-        name = "{{main_airfoil}}_g{{gap}}_a{{aoa}}"
+        name = "{{main_airfoil}}_g{{flap1_gap}}_a{{aoa}}"
 
         [cases.sweep]
         main_airfoil = ["0012", "2412", "4412"]
-        gap = [0.015, 0.03]
+        flap1_gap = [0.015, 0.03]
         aoa = [0, 8, 16, 24]
 
         [screening]
@@ -92,7 +92,7 @@ def test_screen_prunes_and_run_respects_selection(tmp_path, capsys):
     # 유지 계열: 갭은 보호 변수라 두 갭 모두 남고, 실속 이후 24°는 제외
     main = [c for c in kept_cases if c.name not in spot]
     assert {c.params["main_airfoil"] for c in main} == {best_family}
-    assert {c.params["gap"] for c in main} == {0.015, 0.03}
+    assert {c.params["flap1_gap"] for c in main} == {0.015, 0.03}
     assert all(c.params["aoa"] < 24 for c in main)
     assert len(r["kept"]) < len(cases) / 2
 
@@ -134,7 +134,7 @@ def test_screen_per_speed(tmp_path):
     cfg_path = make_project(tmp_path)
     text = cfg_path.read_text()
     text = text.replace('mach = 0.15\n', 'chord = 0.1157\n')
-    text = text.replace('name = "{main_airfoil}_g{gap}_a{aoa}"', 'name = "{main_airfoil}_g{gap}_v{speed_kmh}_a{aoa}"')
+    text = text.replace('name = "{main_airfoil}_g{flap1_gap}_a{aoa}"', 'name = "{main_airfoil}_g{flap1_gap}_v{speed_kmh}_a{aoa}"')
     text = text.replace('aoa = [0, 8, 16, 24]', 'aoa = [0, 8, 16, 24]\nspeed_kmh = [40, 100]')
     text = text.replace('[screening]', '''[derived]
 velocity = "speed_kmh / 3.6"
@@ -192,8 +192,8 @@ def test_chord_sweep_meshes_and_forces(tmp_path):
     text = cfg_path.read_text()
     text = text.replace('mach = 0.15\n', '')
     text = text.replace('aoa = [0, 8, 16, 24]', 'aoa = [0, 8]\nspeed_kmh = [40, 100]\nchord = [0.1, 0.2]')
-    text = text.replace('name = "{main_airfoil}_g{gap}_a{aoa}"',
-                        'name = "{main_airfoil}_c{chord}_g{gap}_v{speed_kmh}_a{aoa}"')
+    text = text.replace('name = "{main_airfoil}_g{flap1_gap}_a{aoa}"',
+                        'name = "{main_airfoil}_c{chord}_g{flap1_gap}_v{speed_kmh}_a{aoa}"')
     text = text.replace('[screening]', '''[derived]
 velocity = "speed_kmh / 3.6"
 mach = "velocity / 340.29"
