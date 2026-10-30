@@ -272,20 +272,20 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 ### 파일럿 확인 순서
 
 1. `sample_meshes.zip`(예제 폴더)의 메쉬 2개를 Fluent에서 열어 Mesh Check를 확인합니다.
-   - 2단: `4412c375_4412c115d20g6o5_inv` (메인 375 mm + 플랩 115 mm, 뒤집힌 날개)
-   - 3단: `4412c375_4412c80d25g6o5_4412c80d35g8o3_inv` (메인 375 mm + 플랩 80 mm × 2, 뒤집힌 날개)
+   - 2단: `4412c375_4412c115d20g6o5_inv_h30_a4` (메인 375 mm + 플랩 115 mm, 뒤집힌 날개, 지상고 30 mm, 받음각 4°)
+   - 3단: `4412c375_4412c80d25g6o5_4412c80d35g8o3_inv_h30_a4` (메인 375 mm + 플랩 80 mm × 2, 지상고 30 mm, 받음각 4°)
 2. 위 순서로 베이스 케이스를 만든 뒤 `File > Replace Mesh`로 같은 구성의 다른 메쉬로 바꿔도 경계조건, 리포트, 뷰가 유지되는지 확인합니다.
-3. 케이스 하나씩 배치로 돌려봅니다:
+3. 케이스 하나씩 배치로 돌려봅니다 (`--all`은 스크리닝 결과와 상관없이 실행):
 
    ```bash
-   aero-auto run --only "2el_4412c375_f115d20g6_v100_a4"
+   aero-auto run --all --only "2el_4412c375_f115d20g6_h30_v100_a4"
    ```
 
    ```bash
-   aero-auto run --only "3el_4412c375_f80d25_f80d35g8_v100_a4"
+   aero-auto run --all --only "3el_4412c375_f80d25_f80d35g8_h30_v100_a4"
    ```
 
-4. `runs/2el_4412c375/2el_4412c375_f115d20g6_v100_a4/solver.log`에서 저널 명령이 오류 없이 실행됐는지, `img_*.png`가 저장됐는지 확인합니다.
+4. `runs/2el_4412c375_h30/2el_4412c375_f115d20g6_h30_v100_a4/solver.log`에서 저널 명령이 오류 없이 실행됐는지, `img_*.png`가 저장됐는지 확인합니다.
 
 저널(`journal.jou`)의 TUI 명령은 Fluent 버전에 따라 프롬프트가 다를 수 있습니다. 오류가 나면 GUI에서 `File > Write > Start Journal`로 같은 작업을 녹화해 해당 줄을 교체하세요. 특히 `/file/replace-mesh`, `/define/named-expressions/edit`, `/report/reference-values/...`, `/display/save-picture` 부분을 확인하면 됩니다.
 
