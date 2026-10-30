@@ -16,7 +16,12 @@
 
 ; 유입 조건: 베이스 케이스의 Named Expression을 케이스 값으로 변경
 /define/named-expressions/edit "aoa" definition "${aoa} [deg]" q
-/define/named-expressions/edit "mach" definition "${mach}" q
+/define/named-expressions/edit "mach" definition "${mach:.6f}" q
+
+; 기준값: 속도마다 바뀌므로 매 케이스 갱신 (안 하면 cx, cy가 베이스 케이스 속도로 무차원화됨)
+/report/reference-values/velocity ${velocity:.6f}
+/report/reference-values/length ${chord}
+/report/reference-values/area ${chord}
 
 ; 리포트 파일을 케이스 폴더에 저장 (cx, cy, cx-main, cy-main, cx-flap, cy-flap)
 /solve/report-files/edit "coef-rfile" file-name "coef-rfile.out" q

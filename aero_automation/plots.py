@@ -153,7 +153,7 @@ def _category_axis(values):
 
 
 def plot_screening(geoms: list[dict], params: list[str], score_key: str, x_param: str,
-                   protect: list[str], out_dir: Path) -> list[Path]:
+                   protect: list[str], out_dir: Path, title: str = "") -> list[Path]:
     ok = [g for g in geoms if g.get("feasible")]
     saved = []
     if not ok:
@@ -191,7 +191,7 @@ def plot_screening(geoms: list[dict], params: list[str], score_key: str, x_param
             importance[p] = max(means) - min(means)
         for ax in list(axes.flat)[n:]:
             ax.axis("off")
-        fig.suptitle("Main effects (blue = kept, gray = pruned)", fontsize=11)
+        fig.suptitle(f"Main effects (blue = kept, gray = pruned)  {title}", fontsize=11)
         fig.tight_layout()
         saved.append(_save(fig, out_dir / "sensitivity_main_effects.png"))
 
@@ -202,7 +202,7 @@ def plot_screening(geoms: list[dict], params: list[str], score_key: str, x_param
         ax.barh(order, [importance[p] / abs(best) * 100 for p in order],
                 color=["0.6" if p in protect else "tab:blue" for p in order])
         ax.set_xlabel(f"range of mean {label} / best  [%]")
-        ax.set_title("Parameter importance (gray = protected from pruning)", fontsize=10)
+        ax.set_title(f"Parameter importance (gray = protected from pruning)  {title}", fontsize=10)
         ax.grid(alpha=0.3, axis="x")
         saved.append(_save(fig, out_dir / "sensitivity_importance.png"))
 
@@ -235,7 +235,7 @@ def plot_screening(geoms: list[dict], params: list[str], score_key: str, x_param
     for a in (a1, a2):
         a.grid(alpha=0.3)
     a1.legend(fontsize=6)
-    a1.set_title("x = est. stall (main element separation), dashed = post-stall", fontsize=9)
+    a1.set_title(f"x = est. stall (main element separation), dashed = post-stall  {title}", fontsize=9)
     saved.append(_save(fig, out_dir / "screening_polars.png"))
 
     # 4) 형상 산점도
@@ -245,6 +245,7 @@ def plot_screening(geoms: list[dict], params: list[str], score_key: str, x_param
         ax.scatter([g["cl_max_est"] for g in sel], [g["ld_max_est"] for g in sel], c=color, s=18, label=name)
     ax.set_xlabel("est. max Cl")
     ax.set_ylabel("est. max L/D")
+    ax.set_title(title, fontsize=10)
     ax.grid(alpha=0.3)
     ax.legend()
     saved.append(_save(fig, out_dir / "screening_scatter.png"))
@@ -266,4 +267,28 @@ def plot_screening_vs_cfd(pairs: list[tuple[float, float, str]], path: Path, lab
     ax.set_xlabel(f"{label} (screening estimate)")
     ax.set_ylabel(f"{label} (CFD)")
     ax.grid(alpha=0.3)
+    return _save(fig, path)
+
+
+def plot_condition_trend(ranking: list[dict], cond_key: str, geo_keys: list[str], objective: str,
+                         path: Path, top: int = 10) -> Path | None:
+    """조건(예: 속도)에 따른 형상별 최대 L/D(또는 Cl) 변화. 평균 상위 형상만 표시."""
+    metric = "ld_max" if objective == "max_ld" else "cl_max"
+    series: dict[str, list[tuple]] = defaultdict(list)
+    for e in ranking:
+        if isinstance(e.get(cond_key), (int, float)) and e.get(metric) is not None:
+            label = ", ".join(f"{k}={e[k]}" for k in geo_keys if k in e) or "all"
+            series[label].append((e[cond_key], e[metric]))
+    if not series or all(len(v) < 2 for v in series.values()):
+        return None
+    best = sorted(series, key=lambda s: -np.mean([v for _, v in series[s]]))[:top]
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    for label in best:
+        pts = sorted(series[label])
+        ax.plot(*zip(*pts), "o-", ms=4, lw=1.2, label=label)
+    ax.set_xlabel(cond_key)
+    ax.set_ylabel({"ld_max": "max L/D", "cl_max": "max Cl"}[metric])
+    ax.set_title(f"top {len(best)} geometries by mean {metric}", fontsize=10)
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=7)
     return _save(fig, path)

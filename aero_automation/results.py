@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 from .cases import Case
-from .config import ProjectConfig
+from .config import ProjectConfig, safe_name
 from .runner import read_status
 
 _QUOTED = re.compile(r'"([^"]*)"')
@@ -123,7 +123,9 @@ def geometry_keys(cfg: ProjectConfig, cases: list[Case]) -> list[str]:
     return keys
 
 
-def rank_geometries(rows: list[dict], keys: list[str], x_param: str, objective: str) -> list[dict]:
+def rank_geometries(rows: list[dict], keys: list[str], x_param: str, objective: str,
+                    split_by: list[str] = ()) -> list[dict]:
+    """형상별 최대 Cl/L/D. split_by가 있으면 그 조건(예: 속도)마다 따로 순위를 매긴다."""
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
         if r.get("state") == "done" and isinstance(r.get("cl"), float):
@@ -142,9 +144,12 @@ def rank_geometries(rows: list[dict], keys: list[str], x_param: str, objective: 
             entry["mesh"] = rs[0]["mesh"]
         ranking.append(entry)
     sort_key = "ld_max" if objective == "max_ld" else "cl_max"
-    ranking.sort(key=lambda e: e.get(sort_key, float("-inf")), reverse=True)
-    for i, e in enumerate(ranking, start=1):
-        e["rank"] = i
+    ranking.sort(key=lambda e: (tuple(e.get(k) for k in split_by), -e.get(sort_key, float("-inf"))))
+    counter: dict[tuple, int] = {}
+    for e in ranking:
+        cond = tuple(e.get(k) for k in split_by)
+        counter[cond] = counter.get(cond, 0) + 1
+        e["rank"] = counter[cond]
     return ranking
 
 
@@ -156,10 +161,12 @@ def collect(cfg: ProjectConfig, cases: list[Case], plots: bool = True) -> dict:
               "top": [], "plots": []}
 
     keys = geometry_keys(cfg, cases)
-    ranking = rank_geometries(rows, keys, cfg.results.x_param, cfg.results.objective)
+    split_by = [k for k in cfg.results.split_by if k in keys]
+    keys = [k for k in keys if k not in split_by] + split_by
+    ranking = rank_geometries(rows, keys, cfg.results.x_param, cfg.results.objective, split_by)
     if ranking:
         result["ranking"] = _write_csv(out_dir / "ranking.csv", ranking)
-        result["top"] = ranking[:5]
+        result["top"] = [e for e in ranking if e["rank"] <= 3] if split_by else ranking[:5]
     from .screening import check_spot, load_selection
     selection = load_selection(cfg)
     result["warnings"] = check_spot(selection, ranking) if selection else []
@@ -170,7 +177,22 @@ def collect(cfg: ProjectConfig, cases: list[Case], plots: bool = True) -> dict:
             files = sorted({p for pat in cfg.results.report_files for p in case.dir.glob(pat)})
             if files:
                 plot_convergence(files, case.dir / "convergence.png", title=case.name)
-        result["plots"] = plot_summary(rows, out_dir / "plots", cfg.results.x_param, keys)
+        geo_keys = [k for k in keys if k not in split_by]
+        if split_by:
+            # 조건(속도 등)별 폴더에 그래프를 따로 저장
+            conds = sorted({tuple(r.get(k) for k in split_by) for r in rows})
+            for cond in conds:
+                sub = [r for r in rows if tuple(r.get(k) for k in split_by) == cond]
+                label = safe_name(", ".join(f"{k}={v}" for k, v in zip(split_by, cond)))
+                result["plots"] += plot_summary(sub, out_dir / "plots" / label, cfg.results.x_param, geo_keys)
+            if len(split_by) == 1 and ranking:
+                from .plots import plot_condition_trend
+                path = plot_condition_trend(ranking, split_by[0], geo_keys, cfg.results.objective,
+                                            out_dir / "plots" / f"by_{split_by[0]}.png")
+                if path:
+                    result["plots"].append(path)
+        else:
+            result["plots"] = plot_summary(rows, out_dir / "plots", cfg.results.x_param, geo_keys)
         result["plots"] += _screening_comparison(rows, out_dir)
     return result
 

@@ -95,18 +95,20 @@ def cmd_screen(args) -> int:
     print(f"저충실도 스크리닝: 케이스 {len(cases)}개")
     r = screen(cfg, cases)
     n_kept = len(r["kept"])
-    infeasible = sum(1 for g in r["geometries"] if not g["feasible"])
-    print(f"\n형상 {len(r['geometries'])}개 (형상 불가 {infeasible}개), "
-          f"계열 {r['n_families']}개 중 {r['n_families_kept']}개 유지")
-    print(f"케이스 {len(cases)}개 → {n_kept}개 해석 ({(1 - n_kept / len(cases)) * 100:.0f}% 절감)")
+    infeasible = {g["geometry"] for g in r["geometries"] if not g["feasible"]}
+    n_geom = len({g["geometry"] for g in r["geometries"]})
+    print(f"\n형상 {n_geom}개 (형상 불가 {len(infeasible)}개)")
+    for c in r["conditions"]:
+        print(f"\n[{c['condition']}] 계열 {c['families']}개 중 {c['families_kept']}개 유지. "
+              f"상위 형상 ({r['score_key']} 기준, 저충실도 추정):")
+        for g in c["best"]:
+            stall = g["alpha_stall_est"]
+            print(f"  {g['geometry']:<45} Re {g['reynolds']:,.0f}  Cl max {g['cl_max_est']:.2f}  "
+                  f"L/D max {g['ld_max_est']:.1f}  실속 {'-' if stall is None else f'{stall:.1f}°'}")
+    print(f"\n케이스 {len(cases)}개 → {n_kept}개 해석 ({(1 - n_kept / len(cases)) * 100:.0f}% 절감)")
     if r["spot_check"]:
-        n_spot = sum(len(v) for v in r["spot_check"].values())
-        print(f"  (제외 계열 검증용 스팟 체크 {n_spot}개 포함: {', '.join(r['spot_check'])})")
-    print(f"\n상위 형상 ({r['score_key']} 기준, 저충실도 추정):")
-    for g in [g for g in r["geometries"] if g["feasible"]][:5]:
-        stall = g["alpha_stall_est"]
-        print(f"  {g['geometry']:<45} Cl max {g['cl_max_est']:.2f}  L/D max {g['ld_max_est']:.1f}  "
-              f"실속 {'-' if stall is None else f'{stall:.1f}°'}")
+        n_spot = sum(len(s["cases"]) for s in r["spot_check"])
+        print(f"  (제외 계열 검증용 스팟 체크 {n_spot}개 포함)")
     print(f"\n결과: {r['dir']}  (geometries.csv, cases.csv, sensitivity_*.png, screening_*.png)")
     print("이후 run 은 제외된 케이스를 자동으로 건너뜁니다 (전체 실행은 run --all).")
     return 0

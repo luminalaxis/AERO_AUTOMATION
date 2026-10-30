@@ -1,6 +1,8 @@
 # 2D 메인익 + 슬롯 플랩 형상 최적화 예제
-#   메인익 4종 × 플랩 2종 × 플랩각 2 × 갭 3 = 형상 48개, × 받음각 6 = 288 케이스
-#   aero-auto screen 으로 저충실도 선별 후 가망 있는 케이스만 CFD 실행
+#   메인익 4종 × 플랩 2종 × 플랩각 2 × 갭 3 = 형상 48개
+#   × 받음각 6 × 속도 4 (40/60/80/100 km/h) = 1152 케이스
+#   메쉬는 형상별 48개만 생성 (속도·받음각 공유)
+#   aero-auto screen 으로 속도별 저충실도 선별 후 가망 있는 케이스만 CFD 실행
 
 [project]
 name = "flap_optimization"
@@ -20,11 +22,11 @@ timeout_minutes = 60
 [constants]                  # 모든 케이스 공통 (스윕 값이 우선)
 flap_chord = 0.3             # 플랩 시위 / 메인익 시위
 overlap = 0.01               # [c] 메인익 뒷전 x - 플랩 앞전 x
-mach = 0.15
+chord = 0.1157               # 메인익 시위 [m] ← 실제 값으로 변경 (현재: 100 km/h에서 Re 22만이 되는 값)
 iterations = 2000
 
 [cases]
-name = "{main_airfoil}-{flap_airfoil}_d{flap_deflection}_g{gap}_a{aoa}"
+name = "{main_airfoil}-{flap_airfoil}_d{flap_deflection}_g{gap}_v{speed_kmh}_a{aoa}"
 group = "{main_airfoil}-{flap_airfoil}_d{flap_deflection}_g{gap}"   # 형상별 분류 폴더
 
 [cases.sweep]                # 전체 조합으로 케이스 생성
@@ -33,8 +35,15 @@ flap_airfoil = ["4412", "6412"]
 flap_deflection = [20, 30]   # [deg] 뒷전 아래 방향 +
 gap = [0.01, 0.02, 0.03]     # [c] 메인익 뒷전 ~ 플랩 표면 최소 거리
 aoa = [0, 4, 8, 12, 16, 20]  # [deg] 메쉬는 공유, Fluent에서 유입 방향만 변경
+speed_kmh = [40, 60, 80, 100]  # 주행 속도 [km/h] → 아래 [derived]에서 Mach, Re 계산
 
-[screening]                  # CFD 전 저충실도 선별 (aero-auto screen)
+[derived]                    # Fluent 기본 공기 물성 (15°C, 1 atm): ρ=1.225, μ=1.7894e-5, 음속 340.29 m/s
+velocity = "speed_kmh / 3.6"                          # [m/s]
+mach = "velocity / 340.29"
+reynolds = "1.225 * velocity * chord / 1.7894e-5"    # 메인익 시위 기준
+
+[screening]                  # CFD 전 저충실도 선별 (aero-auto screen), 속도별로 따로 선별
+transition = "free"          # Re 10만대는 천이 영향이 커서 자연 천이로 추정 (Fluent는 Transition SST 권장)
 protect = ["gap", "overlap"] # 이 변수 값만으로는 제외하지 않음 (슬롯 유동은 저충실도 예측이 부정확)
 keep_top = 3                 # 점수 상위 3개 계열(익형 조합 × 플랩각)은 항상 유지
 keep_within = 0.05           # 최고 계열 대비 5% 이내면 유지
@@ -42,8 +51,8 @@ spot_check = 1               # 제외된 계열 중 최상위 1개는 대표 케
 aoa_margin = 2.0             # 추정 실속각 + 2° 까지 해석 (넘는 첫 받음각 1개는 유지)
 
 [mesh]                       # gmsh 자동 메쉬 (전체 항목은 README 참고)
-chord = 1.0                  # 메인익 시위 [m]
-reynolds = 3e6               # 첫 셀 높이(y+) 계산용
+# chord, reynolds 는 케이스 변수에서 자동으로 가져옴
+# (형상이 같으면 속도와 무관하게 메쉬 공유, 첫 셀 높이는 최고 Re 기준 → 모든 속도에서 y+ ≤ 1)
 y_plus = 1.0
 growth_rate = 1.15
 surface_cells = 200          # 메인익 윗면/아랫면 각각
@@ -56,3 +65,4 @@ average_last = 100           # 마지막 100 iteration 평균
 x_param = "aoa"
 wind_axes = true             # cx, cy 리포트 → cl, cd 자동 변환
 objective = "max_ld"         # 형상 순위: max_ld 또는 max_cl
+split_by = ["speed_kmh"]     # 속도별로 순위·그래프·스크리닝 선별을 따로 수행

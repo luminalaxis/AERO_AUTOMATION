@@ -17,8 +17,8 @@ project.toml (형상·받음각 스윕)
    ▼
 runs/screening/      저충실도 추정, 민감도 그래프, 선별 결과
 runs/summary.csv     케이스별 조건 + Cl, Cd, L/D (+ 메인익/플랩 각각)
-runs/ranking.csv     형상별 최대 Cl, 최대 L/D 순위
-runs/plots/          Cl-α, Cd-α, L/D-α, 극곡선
+runs/ranking.csv     형상별 최대 Cl, 최대 L/D 순위 (속도별로 따로)
+runs/plots/          속도별 폴더에 Cl-α, Cd-α, L/D-α, 극곡선 + 속도에 따른 형상별 최대 L/D
 runs/<형상>/<케이스>/ convergence.png, img_*.png (Fluent 컨투어)
 ```
 
@@ -39,11 +39,11 @@ cd examples/flap_optimization
 ```
 
 ```bash
-aero-auto plan --dry-run   # 케이스 목록 확인 (288개 = 메인익 4 × 플랩 2 × 플랩각 2 × 갭 3 × 받음각 6)
+aero-auto plan --dry-run   # 케이스 목록 확인 (1152개 = 메인익 4 × 플랩 2 × 플랩각 2 × 갭 3 × 받음각 6 × 속도 4)
 ```
 
 ```bash
-aero-auto screen           # 저충실도 선별 (예제: 288개 → 92개, 약 15초)
+aero-auto screen           # 속도별 저충실도 선별 (예제: 1152개 → 332개, 약 40초)
 ```
 
 ```bash
@@ -68,17 +68,49 @@ aero-auto collect          # 결과 다시 정리 (summary, ranking, 그래프)
 - `screen`을 한 번 돌리면 이후 `mesh`, `run`은 제외된 케이스를 자동으로 건너뜁니다(상태 `screened`). 스크리닝을 무시하려면 `--all`.
 - 실패 판정: 종료 코드, 로그의 `Error:` / `Divergence detected`, 시간 초과(`timeout_minutes`), 메쉬 생성 실패.
 
+## 속도별 해석 (운용 조건 스윕)
+
+예제는 주행 속도 40/60/80/100 km/h를 스윕합니다. 속도에서 유속, 마하수, 레이놀즈수를 `[derived]`로 계산합니다(Fluent 기본 공기 물성: ρ = 1.225 kg/m³, μ = 1.7894×10⁻⁵ Pa·s, 음속 340.29 m/s).
+
+```toml
+[constants]
+chord = 0.1157               # 메인익 시위 [m]
+
+[cases.sweep]
+speed_kmh = [40, 60, 80, 100]
+
+[derived]
+velocity = "speed_kmh / 3.6"
+mach = "velocity / 340.29"
+reynolds = "1.225 * velocity * chord / 1.7894e-5"
+
+[results]
+split_by = ["speed_kmh"]     # 속도별로 순위·그래프·스크리닝 선별
+```
+
+| 속도 | 유속 | 마하수 | Re (시위 0.1157 m) |
+|---|---|---|---|
+| 40 km/h | 11.1 m/s | 0.033 | 88,000 |
+| 60 km/h | 16.7 m/s | 0.049 | 132,000 |
+| 80 km/h | 22.2 m/s | 0.065 | 176,000 |
+| 100 km/h | 27.8 m/s | 0.082 | 220,000 |
+
+- 시위 길이가 고정이면 Re는 속도에 비례합니다. 예제의 `chord = 0.1157`은 100 km/h에서 Re 22만이 되는 값이니 실제 시위로 바꾸세요. 메쉬 스케일과 Re가 함께 바뀝니다.
+- **메쉬:** 속도와 무관하게 형상별로 하나만 만듭니다. 첫 셀 높이는 그 형상 케이스 중 가장 높은 Re 기준이라 모든 속도에서 y+ ≤ 목표입니다.
+- **Fluent:** 저널이 케이스마다 `mach` Named Expression과 기준 속도·길이·면적을 갱신합니다. 기준 속도를 갱신하지 않으면 계수가 베이스 케이스 속도 기준으로 잘못 계산됩니다.
+- **`split_by`:** 스크리닝 선별, `ranking.csv` 순위, 그래프를 속도별로 따로 만듭니다. 어떤 형상이 특정 속도에서만 좋아도 그 속도에서는 살아남습니다. `plots/by_speed_kmh.png`는 상위 형상의 최대 L/D가 속도에 따라 어떻게 변하는지 보여줍니다.
+
 ## CFD 전 스크리닝 (`screen`)
 
 에어포일 종류를 여러 개 넣으면 조합이 금방 수백 개가 됩니다. `screen`은 Fluent를 돌리기 전에 모든 형상을 저충실도로 해석해서 민감도를 보여주고, 가망 없는 케이스를 미리 제외합니다.
 
 **해석 방법 (형상당 약 0.3초)**
 - 다요소 패널법(Hess-Smith): 비점성 Cl, Cp. NACA 0012 α=4°에서 Cl 0.478 등 이론값과 일치
-- 적분 경계층(Thwaites → Head)으로 Cd(Squire-Young)와 윗면 박리 위치 추정. 기본은 완전 난류(`transition = "turbulent"`)로 Fluent SST 설정과 맞춤
+- 적분 경계층(Thwaites → Head)으로 Cd(Squire-Young)와 윗면 박리 위치 추정. 기본은 완전 난류(`transition = "turbulent"`)로 Fluent SST 설정과 맞춤. Re 10만대처럼 천이 영향이 큰 경우는 `transition = "free"`(예제 설정)와 Fluent Transition SST를 함께 쓰세요
 - 실속각 추정: 메인익 윗면 박리 구간이 `sep_limit`(기본 10%)를 넘는 받음각
 
 **선별 규칙**
-1. **계열 선별:** `protect` 변수(기본 `gap`, `overlap`)를 제외한 나머지(익형 조합, 플랩각 등)가 같은 형상들을 한 계열로 묶고, 계열 안 최고 점수로 비교합니다. 상위 `keep_top`개 계열과 최고 대비 `keep_within` 이내 계열만 남깁니다. 점수는 `[results] objective`(최대 L/D 또는 최대 Cl)를 따릅니다.
+1. **계열 선별:** `protect` 변수(기본 `gap`, `overlap`)를 제외한 나머지(익형 조합, 플랩각 등)가 같은 형상들을 한 계열로 묶고, 계열 안 최고 점수로 비교합니다. 상위 `keep_top`개 계열과 최고 대비 `keep_within` 이내 계열만 남깁니다. 점수는 `[results] objective`(최대 L/D 또는 최대 Cl)를 따릅니다. `[results] split_by`가 있으면 조건(속도)마다 따로 선별합니다.
 2. **보호 변수:** 슬롯 갭과 오버랩은 합류 경계층 같은 점성 효과가 커서 저충실도 예측이 부정확합니다. 그래서 이 값만으로는 제외하지 않고, 남은 계열 안에서는 모든 갭/오버랩을 CFD로 돌립니다.
 3. **받음각 선별:** 추정 실속각 + `aoa_margin`을 넘는 받음각은 제외합니다. 실속 이후 거동 확인용으로 넘는 첫 받음각 1개는 남깁니다.
 4. **스팟 체크:** 제외된 계열 중 최상위 `spot_check`개의 최고 형상은 받음각 1~2개만 CFD로 돌립니다. `collect`에서 이 형상이 CFD에서 남긴 형상보다 좋게 나오면 경고합니다. 이 경우 `keep_within`을 늘려 다시 `screen` 하세요.
@@ -133,8 +165,8 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 
 | 항목 | 기본값 | 내용 |
 |---|---|---|
-| `chord` | 1.0 | 메인익 시위 [m]. 메쉬 좌표 스케일 |
-| `reynolds`, `y_plus` | 3e6, 1.0 | 첫 셀 높이 계산 (평판 난류 마찰계수 추정) |
+| `chord` | 1.0 | 메인익 시위 [m]. 메쉬 좌표 스케일 (케이스 변수 `chord`가 있으면 그 값) |
+| `reynolds`, `y_plus` | 3e6, 1.0 | 첫 셀 높이 계산 (평판 난류 마찰계수 추정). 케이스 변수 `reynolds`가 있으면 형상별 최댓값 |
 | `growth_rate` | 1.15 | 경계층 성장률 |
 | `bl_thickness` | 0.02 | 경계층 사각형 영역 최대 두께 [c] |
 | `gap_bl_fraction` | 0.3 | 슬롯에서 경계층 두께 ≤ 최소 간격 × 이 값 (갭이 좁으면 자동으로 얇아짐) |
@@ -145,7 +177,7 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 | `min_quality` | 0.05 | 최소 셀 품질 (삼각형 SICN, 사각형 scaled Jacobian). 미달 시 경계층을 얇게 해서 재시도 |
 
 경계 이름은 항상 `main`, `flap`(wall), `farfield`(pressure-far-field), 셀 영역은 `fluid`입니다. 모든 형상에서 이름이 같아서 Fluent에서 메쉬만 교체해도 설정이 유지됩니다.
-`[mesh]` 항목과 같은 이름의 케이스 변수가 있으면 케이스 값이 우선합니다. 예를 들어 `reynolds`를 스윕하면 케이스마다 첫 셀 높이가 달라집니다.
+`[mesh]` 항목과 같은 이름의 케이스 변수가 있으면 케이스 값이 우선합니다. 단 `reynolds`는 형상 안에서 가장 큰 값을 써서 속도가 달라도 메쉬를 공유합니다.
 
 메쉬 독립성은 기준 형상 하나로 `surface_cells`, `near_size` 등을 2~3단계 바꿔 Cl/Cd가 수렴하는지 확인한 뒤, 최적화 동안에는 설정을 고정하는 것을 권장합니다. 설정이 같아야 형상 간 비교에서 메쉬 차이로 생기는 노이즈가 줄어듭니다.
 
@@ -155,13 +187,13 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 
 1. `aero-auto mesh`로 만든 메쉬 하나를 Fluent 2D 배정밀도(2ddp)에서 엽니다: `File > Read > Mesh` → `runs/_meshes/<형상>/mesh.msh`
 2. `Mesh > Check`가 통과하는지 확인합니다. 단위는 m입니다.
-3. **Models**: Viscous → k-omega SST (권장)
+3. **Models**: Viscous → Transition SST (Re 10만대 권장. 층류 박리 기포와 천이를 잡음) 또는 k-omega SST(완전 난류)
 4. **Materials**: air, Density = **ideal-gas**. pressure-far-field 경계조건은 ideal-gas가 필요합니다.
-5. **Named Expressions**: `aoa` = `0 [deg]`, `mach` = `0.15`
+5. **Named Expressions**: `aoa` = `0 [deg]`, `mach` = `0.08` (값은 저널이 케이스마다 바꿈)
 6. **Boundary Conditions**
    - `farfield` (pressure-far-field): Mach Number = `mach`, X-Component of Flow Direction = `cos(aoa)`, Y-Component = `sin(aoa)`
    - `main`, `flap`: wall
-7. **Reference Values**: Compute from `farfield`, Length = 시위(m), Area = 시위 × 1 m (2D)
+7. **Reference Values**: Compute from `farfield`, Length = 시위(m), Area = 시위 × 1 m (2D). 속도·길이·면적은 저널이 케이스마다 다시 설정합니다
 8. **Report Definitions**: Force 리포트를 Coefficient로 만듭니다.
    - `cx`: Zones = main, flap / Force Vector = (1, 0)
    - `cy`: Zones = main, flap / Force Vector = (0, 1)
@@ -177,15 +209,15 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 
 ### 파일럿 확인 순서
 
-1. `sample_meshes.zip`(예제 폴더)의 메쉬 2개(갭 0.01, 0.03)를 Fluent에서 열어 Mesh Check를 확인합니다.
+1. `sample_meshes.zip`(예제 폴더)의 메쉬 2개(갭 0.01, 0.03, 시위 0.1157 m, Re 22만 기준)를 Fluent에서 열어 Mesh Check를 확인합니다.
 2. 위 순서로 베이스 케이스를 만든 뒤 `File > Replace Mesh`로 다른 메쉬로 바꿔도 경계조건, 리포트, 뷰가 유지되는지 확인합니다.
 3. 케이스 하나만 배치로 돌려봅니다:
 
    ```bash
-   aero-auto run --only "2412-4412_d20_g0.01_a4"
+   aero-auto run --only "2412-4412_d20_g0.01_v100_a4"
    ```
 
-4. `runs/2412-4412_d20_g0.01/2412-4412_d20_g0.01_a4/solver.log`에서 저널 명령이 오류 없이 실행됐는지, `img_*.png`가 저장됐는지 확인합니다.
+4. `runs/2412-4412_d20_g0.01/2412-4412_d20_g0.01_v100_a4/solver.log`에서 저널 명령이 오류 없이 실행됐는지, `img_*.png`가 저장됐는지 확인합니다.
 
 저널(`journal.jou`)의 TUI 명령은 Fluent 버전에 따라 프롬프트가 다를 수 있습니다. 오류가 나면 GUI에서 `File > Write > Start Journal`로 같은 작업을 녹화해 해당 줄을 교체하세요. 특히 `/file/replace-mesh`, `/display/save-picture` 부분을 확인하면 됩니다.
 
@@ -194,8 +226,8 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 | 파일 | 내용 |
 |---|---|
 | `runs/summary.csv` | 케이스별 형상·받음각, 상태, cx/cy, **cl/cd, l/d** (요소별 포함), 반복 수 |
-| `runs/ranking.csv` | 형상별 최대 Cl과 그때 받음각, 최대 L/D와 그때 받음각·Cl·Cd. `objective` 기준 정렬 |
-| `runs/plots/*.png` | 형상별 Cl-α, Cd-α, L/D-α, 극곡선 |
+| `runs/ranking.csv` | 형상별 최대 Cl과 그때 받음각, 최대 L/D와 그때 받음각·Cl·Cd. `objective` 기준 정렬 (`split_by` 조건별 순위) |
+| `runs/plots/*.png` | 형상별 Cl-α, Cd-α, L/D-α, 극곡선 (`split_by`가 있으면 조건별 폴더), `by_<조건>.png` |
 | `runs/_meshes/<형상>/` | `geometry.png`, `mesh.png`, `mesh_slot.png`, `mesh_le.png`, `mesh_info.json` |
 | `runs/<그룹>/<케이스>/` | `convergence.png`(리포트 수렴 이력), `img_*.png`(Fluent 컨투어), `solver.log`, `result.cas.h5` |
 
@@ -212,7 +244,8 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 | `[cases.sweep]` | 전체 조합 변수 |
 | `[derived]` | 계산 변수, 예: `flow_x = "cos(radians(aoa))"` |
 | `[mesh]` | 위 메쉬 설정. 섹션이 없으면 메쉬 생성 없이 기존 방식으로 동작 |
-| `[results]` | `report_files`, `average_last`, `x_param`, `wind_axes`, `objective`(`max_ld`/`max_cl`) |
+| `[results]` | `report_files`, `average_last`, `x_param`, `wind_axes`, `objective`(`max_ld`/`max_cl`), `split_by`(조건별 분석 변수) |
+| `[screening]` | 스크리닝 설정 (위 표 참고) |
 
 저널 템플릿에서 쓸 수 있는 변수는 모든 케이스 변수에 더해 `${case_name}`, `${group}`, `${case_dir}`, `${project_dir}`, `${nprocs}`, `${mesh_file}`, `${mesh_name}`입니다. 포맷 지정도 됩니다: `${aoa:.2f}`.
 

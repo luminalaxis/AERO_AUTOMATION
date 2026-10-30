@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .config import ConfigError, ProjectConfig, safe_name
 from .expr import evaluate
-from .meshing import MeshJob, make_job
+from .meshing import GEOMETRY_KEYS, MeshJob, make_job, mesh_name
 
 
 @dataclass
@@ -84,9 +84,31 @@ def build_cases(cfg: ProjectConfig) -> list[Case]:
         seen[name] = idx
 
         case_dir = cfg.output_dir / group / name if group else cfg.output_dir / name
-        mesh = make_job(params, cfg.mesh, cfg.output_dir / "_meshes") if cfg.mesh is not None else None
-        cases.append(Case(name=name, group=group, params=params, dir=case_dir, mesh=mesh))
+        cases.append(Case(name=name, group=group, params=params, dir=case_dir))
+
+    if cfg.mesh is not None:
+        _attach_meshes(cases, cfg)
     return cases
+
+
+def _attach_meshes(cases: list[Case], cfg: ProjectConfig) -> None:
+    """형상이 같은 케이스는 메쉬 하나를 공유한다.
+
+    케이스 변수 reynolds가 형상 안에서 다르면(예: 속도 스윕) 가장 큰 값으로 첫 셀 높이를 잡아
+    모든 조건에서 y+ 가 목표 이하가 되게 한다.
+    """
+    meshes_dir = cfg.output_dir / "_meshes"
+    max_re: dict[str, float] = {}
+    for c in cases:
+        if "reynolds" in c.params and "main_airfoil" in c.params:
+            key = mesh_name({k: c.params[k] for k in GEOMETRY_KEYS if k in c.params and c.params[k] != ""})
+            max_re[key] = max(max_re.get(key, 0.0), float(c.params["reynolds"]))
+    for c in cases:
+        params = c.params
+        if "reynolds" in params and "main_airfoil" in params:
+            key = mesh_name({k: params[k] for k in GEOMETRY_KEYS if k in params and params[k] != ""})
+            params = {**params, "reynolds": max_re[key]}
+        c.mesh = make_job(params, cfg.mesh, meshes_dir)
 
 
 def filter_cases(cases: list[Case], patterns: list[str] | None) -> list[Case]:

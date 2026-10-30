@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from .cases import Case
-from .config import ConfigError, ProjectConfig
+from .config import ConfigError, ProjectConfig, safe_name
 from .geometry import build_geometry
 from .meshing import GEOMETRY_KEYS, mesh_name
 from .panel import analyze, solve_inviscid
@@ -78,10 +78,19 @@ def _stall_alpha(alphas: np.ndarray, sep: np.ndarray, limit: float) -> float | N
 
 
 def evaluate_geometry(params: dict, root: Path, case_alphas: list[float], re: float, mach: float,
-                      sc: ScreeningConfig, x_param: str) -> dict:
-    """한 형상의 받음각 스윕 저충실도 해석. 실패(형상 불가)면 ConfigError."""
-    geom = build_geometry(params, root)
-    sol = solve_inviscid(geom, sc.n_side)
+                      sc: ScreeningConfig, x_param: str, cache: dict | None = None) -> dict:
+    """한 형상의 받음각 스윕 저충실도 해석. 실패(형상 불가)면 ConfigError.
+
+    비점성 해는 Re/Mach와 무관하므로 cache에 형상별로 저장해 조건(속도)마다 재사용한다.
+    """
+    key = mesh_name(params)
+    if cache is not None and key in cache:
+        geom, sol = cache[key]
+    else:
+        geom = build_geometry(params, root)
+        sol = solve_inviscid(geom, sc.n_side)
+        if cache is not None:
+            cache[key] = (geom, sol)
     lo, hi = min(case_alphas), max(case_alphas) + sc.aoa_margin + 4
     grid = np.unique(np.round(np.concatenate([np.arange(lo, hi + 1e-9, sc.aoa_step), case_alphas]), 6))
     pts = [analyze(sol, a, re, mach, sc.transition) for a in grid]
@@ -105,75 +114,95 @@ def evaluate_geometry(params: dict, root: Path, case_alphas: list[float], re: fl
     }
 
 
+def condition_label(cond: tuple) -> str:
+    return ", ".join(f"{k}={v}" for k, v in cond) or "all"
+
+
 def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
     sc = ScreeningConfig.from_dict(cfg.screening)
     metric = sc.metric or cfg.results.objective
     score_key = "ld_max_est" if metric == "max_ld" else "cl_max_est"
     x_param = cfg.results.x_param
+    split_by = cfg.results.split_by
     if any("main_airfoil" not in c.params for c in cases):
         raise ConfigError("스크리닝에는 형상 변수(main_airfoil 등)가 필요합니다.")
     if any(x_param not in c.params for c in cases):
         raise ConfigError(f"스크리닝에는 받음각 변수 '{x_param}'가 필요합니다 ([results] x_param).")
+    missing = [k for k in split_by if any(k not in c.params for c in cases)]
+    if missing:
+        raise ConfigError(f"[results] split_by 변수가 케이스에 없습니다: {', '.join(missing)}")
 
-    # 형상(+유동 조건)별로 케이스 묶기
+    # 형상 × 운용 조건(split_by, 예: 속도)별로 케이스 묶기
     groups: dict[tuple, list[Case]] = {}
     for c in cases:
-        gp = _geometry_params(c)
-        groups.setdefault((mesh_name(gp), *_flow(c, cfg, sc)), []).append(c)
+        cond = tuple((k, c.params[k]) for k in split_by)
+        groups.setdefault((mesh_name(_geometry_params(c)), cond, *_flow(c, cfg, sc)), []).append(c)
 
     varying = [k for k in GEOMETRY_KEYS
                if len({repr(_geometry_params(c).get(k)) for c in cases}) > 1]
     family_keys = [k for k in varying if k not in sc.protect]
 
     geoms: list[dict] = []
-    for i, ((gname, re, mach), gcases) in enumerate(groups.items(), start=1):
+    cache: dict = {}
+    for i, ((gname, cond, re, mach), gcases) in enumerate(groups.items(), start=1):
         gp = _geometry_params(gcases[0])
-        row = {"geometry": gname, **{k: gp.get(k, "") for k in varying}, "reynolds": re, "mach": mach,
+        row = {"geometry": gname, "condition": condition_label(cond), **dict(cond),
+               **{k: gp.get(k, "") for k in varying}, "reynolds": re, "mach": mach,
                "family": ", ".join(f"{k}={gp.get(k)}" for k in family_keys) or "all",
                "n_cases": len(gcases)}
         try:
             row.update(evaluate_geometry(gp, cfg.root, [float(c.params[x_param]) for c in gcases],
-                                         re, mach, sc, x_param))
+                                         re, mach, sc, x_param, cache))
             row["feasible"] = True
         except ConfigError as exc:
             row.update(feasible=False, reason=f"형상 불가: {exc}")
         row["_cases"] = gcases
+        row["_cond"] = cond
         geoms.append(row)
         if i % 25 == 0 or i == len(groups):
-            log(f"  저충실도 해석 {i}/{len(groups)} 형상")
+            log(f"  저충실도 해석 {i}/{len(groups)} (형상 × 조건)")
 
-    # 계열 선별
-    families: dict[str, float] = {}
-    for g in geoms:
-        if g["feasible"]:
-            families[g["family"]] = max(families.get(g["family"], -math.inf), g[score_key])
-    ranked = sorted(families.items(), key=lambda kv: kv[1], reverse=True)
-    best = ranked[0][1] if ranked else 0.0
-    threshold = best - abs(best) * sc.keep_within
-    keep_family = {f for rank, (f, s) in enumerate(ranked, start=1) if rank <= sc.keep_top or s >= threshold}
-    family_rank = {f: r for r, (f, _) in enumerate(ranked, start=1)}
-
-    # 스팟 체크: 제외된 계열 중 상위 계열의 최고 형상, 추정 최적 받음각 근처 케이스만 유지
-    spot: dict[str, list[str]] = {}
-    pruned_families = [f for f, _ in ranked if f not in keep_family][: sc.spot_check]
-    for fam in pruned_families:
-        g = max((g for g in geoms if g["feasible"] and g["family"] == fam), key=lambda g: g[score_key])
-        alphas = sorted({float(c.params[x_param]) for c in g["_cases"]})
-        targets = {g[f"{x_param}@ld_max_est"], g[f"{x_param}@cl_max_est"]}
-        picks = {min(alphas, key=lambda a: abs(a - t)) for t in targets}
-        spot[g["geometry"]] = [c.name for c in g["_cases"] if float(c.params[x_param]) in picks]
-
-    case_rows, kept, pruned = [], [], {}
-    for g in geoms:
-        if g["feasible"]:
+    # 조건(속도 등)마다 따로 계열 선별: 특정 조건에서만 좋은 계열도 그 조건에서는 유지
+    conditions = list(dict.fromkeys(g["_cond"] for g in geoms))
+    summary, spot = [], []
+    for cond in conditions:
+        cg = [g for g in geoms if g["_cond"] == cond]
+        families: dict[str, float] = {}
+        for g in cg:
+            if g["feasible"]:
+                families[g["family"]] = max(families.get(g["family"], -math.inf), g[score_key])
+        ranked = sorted(families.items(), key=lambda kv: kv[1], reverse=True)
+        best = ranked[0][1] if ranked else 0.0
+        threshold = best - abs(best) * sc.keep_within
+        keep_family = {f for r, (f, s) in enumerate(ranked, start=1) if r <= sc.keep_top or s >= threshold}
+        family_rank = {f: r for r, (f, _) in enumerate(ranked, start=1)}
+        for g in cg:
+            if not g["feasible"]:
+                g["keep"] = False
+                continue
             g["family_rank"] = family_rank[g["family"]]
             g["family_score"] = families[g["family"]]
             g["keep"] = g["family"] in keep_family
             if not g["keep"]:
-                g["reason"] = (f"계열 {score_key} {families[g['family']]:.3g} < 기준 {threshold:.3g} "
-                               f"(상위 {sc.keep_top}개 밖)")
-        else:
-            g["keep"] = False
+                g["reason"] = (f"[{condition_label(cond)}] 계열 {score_key} {families[g['family']]:.3g} "
+                               f"< 기준 {threshold:.3g} (상위 {sc.keep_top}개 밖)")
+        # 스팟 체크: 제외된 계열 중 상위 계열의 최고 형상, 추정 최적 받음각 근처 케이스만 유지
+        for fam in [f for f, _ in ranked if f not in keep_family][: sc.spot_check]:
+            g = max((g for g in cg if g["feasible"] and g["family"] == fam), key=lambda g: g[score_key])
+            alphas = sorted({float(c.params[x_param]) for c in g["_cases"]})
+            targets = {g[f"{x_param}@ld_max_est"], g[f"{x_param}@cl_max_est"]}
+            picks = {min(alphas, key=lambda a: abs(a - t)) for t in targets}
+            g["spot_check"] = True
+            spot.append({"geometry": g["geometry"], "condition": dict(cond),
+                         "cases": [c.name for c in g["_cases"] if float(c.params[x_param]) in picks]})
+        summary.append({"condition": condition_label(cond), "families": len(families),
+                        "families_kept": len(keep_family),
+                        "best": [g for g in sorted((g for g in cg if g["feasible"]),
+                                                   key=lambda g: -g[score_key])][:3]})
+    spot_cases = {n for s in spot for n in s["cases"]}
+
+    case_rows, kept, pruned = [], [], {}
+    for g in geoms:
         a_cut = None
         if g["keep"] and sc.prune_aoa and g.get("alpha_stall_est") is not None:
             a_cut = g["alpha_stall_est"] + sc.aoa_margin
@@ -187,17 +216,16 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
             reason = g.get("reason", "") if not g["keep"] else ""
             if g["keep"] and a_cut is not None and a > a_cut:
                 reason = f"추정 실속각 {g['alpha_stall_est']:.1f}° + {sc.aoa_margin:g}° 초과"
-            if c.name in spot.get(g["geometry"], []):
+            if c.name in spot_cases:
                 reason = ""
-                g["spot_check"] = True
             keep = not reason
-            case_rows.append({"case": c.name, "geometry": g["geometry"], x_param: a,
+            case_rows.append({"case": c.name, "geometry": g["geometry"], "condition": g["condition"],
+                              x_param: a, "reynolds": g["reynolds"], "mach": g["mach"],
                               "cl_est": est.cl if est else "", "cd_est": est.cd if est else "",
                               "ld_est": est.ld if est else "",
                               "cl_main_est": est.cl_elements[0] if est else "",
                               "sep_main_est": est.sep_upper[0] if est else "",
-                              "keep": keep, "reason": reason,
-                              "spot_check": c.name in spot.get(g["geometry"], [])})
+                              "keep": keep, "reason": reason, "spot_check": c.name in spot_cases})
             if keep:
                 kept.append(c.name)
             else:
@@ -206,32 +234,39 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
     out = cfg.output_dir / SCREEN_DIR
     out.mkdir(parents=True, exist_ok=True)
     public = [{k: v for k, v in g.items() if not k.startswith("_")} for g in geoms]
-    public.sort(key=lambda g: (not g["feasible"], -(g.get(score_key) or -math.inf)))
+    public.sort(key=lambda g: (g["condition"], not g["feasible"], -(g.get(score_key) or -math.inf)))
     _write_csv(out / "geometries.csv", public)
     _write_csv(out / "cases.csv", case_rows)
     selection = {"all_cases": [c.name for c in cases], "kept": kept, "pruned": pruned,
-                 "spot_check": spot, "metric": score_key, "settings": asdict(sc)}
+                 "spot_check": spot, "metric": score_key, "split_by": split_by, "settings": asdict(sc)}
     (out / SELECTION_FILE).write_text(json.dumps(selection, ensure_ascii=False, indent=1), encoding="utf-8")
 
     from .plots import plot_screening
-    plots = plot_screening(geoms, varying, score_key, x_param, sc.protect, out)
+    plots = []
+    for cond in conditions:
+        sub = out if len(conditions) == 1 else out / safe_name(condition_label(cond))
+        plots += plot_screening([g for g in geoms if g["_cond"] == cond], varying, score_key, x_param,
+                                sc.protect, sub, title=condition_label(cond) if cond else "")
     return {"dir": out, "geometries": public, "kept": kept, "pruned": pruned, "plots": plots,
-            "score_key": score_key, "n_families": len(families), "n_families_kept": len(keep_family),
-            "spot_check": spot}
+            "score_key": score_key, "conditions": summary, "spot_check": spot}
 
 
 def check_spot(selection: dict, ranking: list[dict]) -> list[str]:
-    """스팟 체크 형상의 CFD 결과가 유지된 형상보다 좋으면 경고 메시지를 만든다."""
-    spot = selection.get("spot_check") or {}
+    """스팟 체크 형상의 CFD 결과가 같은 조건에서 유지된 형상보다 좋으면 경고 메시지를 만든다."""
     key = "ld_max" if selection.get("metric") == "ld_max_est" else "cl_max"
-    by_geom = {r.get("mesh"): r for r in ranking if r.get("mesh") and r.get(key) is not None}
-    kept_scores = [r[key] for g, r in by_geom.items() if g not in spot]
+    spot_geoms = {(s["geometry"], tuple(sorted(s["condition"].items()))) for s in selection.get("spot_check") or []}
     warnings = []
-    for g in spot:
-        if g in by_geom and kept_scores and by_geom[g][key] > min(kept_scores):
+    for s in selection.get("spot_check") or []:
+        same = [r for r in ranking if r.get("mesh") and r.get(key) is not None
+                and all(r.get(k) == v for k, v in s["condition"].items())]
+        mine = [r for r in same if r["mesh"] == s["geometry"]]
+        others = [r[key] for r in same
+                  if (r["mesh"], tuple(sorted(s["condition"].items()))) not in spot_geoms]
+        if mine and others and mine[0][key] > min(others):
+            cond = condition_label(tuple(s["condition"].items()))
             warnings.append(
-                f"스팟 체크 형상 {g}의 CFD {key} {by_geom[g][key]:.3g}가 유지된 형상의 최저값 "
-                f"{min(kept_scores):.3g}보다 높습니다. 스크리닝이 좋은 형상을 놓쳤을 수 있으니 "
+                f"[{cond}] 스팟 체크 형상 {s['geometry']}의 CFD {key} {mine[0][key]:.3g}가 유지된 형상의 "
+                f"최저값 {min(others):.3g}보다 높습니다. 스크리닝이 좋은 형상을 놓쳤을 수 있으니 "
                 "[screening] keep_within 을 늘려 다시 screen 하는 것을 권장합니다."
             )
     return warnings

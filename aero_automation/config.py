@@ -48,6 +48,7 @@ class ResultsConfig:
     x_param: str = "aoa"  # 그래프 x축 / 받음각 변수 이름
     wind_axes: bool = True  # cx, cy 리포트를 받음각으로 회전해 cl, cd 계산
     objective: str = "max_ld"  # 형상 순위 기준: max_ld (최대 양항비) 또는 max_cl (최대 양력계수)
+    split_by: list[str] = field(default_factory=list)  # 조건별로 나눠 순위/그래프/선별 (예: ["speed_kmh"])
 
 
 @dataclass

@@ -83,10 +83,11 @@ def test_screen_prunes_and_run_respects_selection(tmp_path, capsys):
     cases = build_cases(cfg)
     r = screen(cfg, cases, log=lambda *_: None)
 
-    assert r["n_families"] == 3 and r["n_families_kept"] == 1
+    (cond,) = r["conditions"]
+    assert cond["families"] == 3 and cond["families_kept"] == 1
     best_family = r["geometries"][0]["main_airfoil"]
     kept_cases = [c for c in cases if c.name in r["kept"]]
-    spot = {n for names in r["spot_check"].values() for n in names}
+    spot = {n for s in r["spot_check"] for n in s["cases"]}
     assert spot and all(not n.startswith(best_family) for n in spot)
     # 유지 계열: 갭은 보호 변수라 두 갭 모두 남고, 실속 이후 24°는 제외
     main = [c for c in kept_cases if c.name not in spot]
@@ -117,9 +118,69 @@ def main_cli(cfg_path, *args):
 
 
 def test_check_spot_warns_when_pruned_geometry_wins():
-    selection = {"metric": "ld_max_est", "spot_check": {"geoB": ["b_a4"]}}
-    ranking = [{"mesh": "geoA", "ld_max": 80.0}, {"mesh": "geoC", "ld_max": 60.0}, {"mesh": "geoB", "ld_max": 70.0}]
+    selection = {"metric": "ld_max_est",
+                 "spot_check": [{"geometry": "geoB", "condition": {"v": 40}, "cases": ["b_a4"]}]}
+    ranking = [{"mesh": "geoA", "v": 40, "ld_max": 80.0}, {"mesh": "geoC", "v": 40, "ld_max": 60.0},
+               {"mesh": "geoB", "v": 40, "ld_max": 70.0},
+               {"mesh": "geoC", "v": 100, "ld_max": 10.0}]  # 다른 속도는 비교 대상 아님
     warnings = check_spot(selection, ranking)
-    assert len(warnings) == 1 and "geoB" in warnings[0]
+    assert len(warnings) == 1 and "geoB" in warnings[0] and "v=40" in warnings[0]
     ranking[2]["ld_max"] = 50.0
     assert check_spot(selection, ranking) == []
+
+
+def test_screen_per_speed(tmp_path):
+    """속도별로 Re/Mach가 달라지고, 선별/그래프가 속도마다 따로 만들어진다."""
+    cfg_path = make_project(tmp_path)
+    text = cfg_path.read_text()
+    text = text.replace('mach = 0.15\n', 'chord = 0.1157\n')
+    text = text.replace('name = "{main_airfoil}_g{gap}_a{aoa}"', 'name = "{main_airfoil}_g{gap}_v{speed_kmh}_a{aoa}"')
+    text = text.replace('aoa = [0, 8, 16, 24]', 'aoa = [0, 8, 16, 24]\nspeed_kmh = [40, 100]')
+    text = text.replace('[screening]', '''[derived]
+velocity = "speed_kmh / 3.6"
+mach = "velocity / 340.29"
+reynolds = "1.225 * velocity * chord / 1.7894e-5"
+
+[mesh]
+reynolds = 1e5
+
+[screening]''')
+    text = text.replace('objective = "max_ld"', 'objective = "max_ld"\nsplit_by = ["speed_kmh"]')
+    cfg_path.write_text(text)
+    cfg = load_config(cfg_path)
+    cases = build_cases(cfg)
+
+    c100 = next(c for c in cases if c.params["speed_kmh"] == 100)
+    assert c100.params["reynolds"] == pytest.approx(2.2e5, rel=0.01)
+    assert c100.params["mach"] == pytest.approx(0.0816, rel=0.01)
+    # 메쉬는 속도와 무관하게 형상당 하나, 첫 셀은 최고 Re 기준
+    c40 = next(c for c in cases if c.params["speed_kmh"] == 40 and c.mesh.name == c100.mesh.name)
+    assert c40.mesh is not None and c40.mesh.settings.reynolds == pytest.approx(c100.params["reynolds"])
+    assert len({c.mesh.name for c in cases}) == 6
+
+    r = screen(cfg, cases, log=lambda *_: None)
+    assert [c["condition"] for c in r["conditions"]] == ["speed_kmh=40", "speed_kmh=100"]
+    re_by_speed = {g["speed_kmh"]: g["reynolds"] for g in r["geometries"]}
+    assert re_by_speed[40] == pytest.approx(re_by_speed[100] * 0.4)
+    for sub in ("speed_kmh=40", "speed_kmh=100"):
+        assert (r["dir"] / sub / "sensitivity_main_effects.png").is_file()
+    assert {s["condition"]["speed_kmh"] for s in r["spot_check"]} == {40, 100}
+
+
+def test_ranking_per_condition(tmp_path):
+    from aero_automation.plots import plot_condition_trend
+    from aero_automation.results import rank_geometries
+
+    rows = []
+    for v, bonus in ((40, 0.0), (100, 1.0)):
+        for geo, ld in (("A", 50), ("B", 60)):
+            for aoa in (0, 4):
+                # 40 km/h에서는 B가, 100 km/h에서는 A가 우세하도록
+                score = ld + aoa + (30 * bonus if geo == "A" else 0)
+                rows.append({"state": "done", "geo": geo, "speed_kmh": v, "aoa": aoa,
+                             "cl": 1.0, "cd": 1.0 / score, "l/d": float(score)})
+    ranking = rank_geometries(rows, ["geo", "speed_kmh"], "aoa", "max_ld", ["speed_kmh"])
+    best = {e["speed_kmh"]: e["geo"] for e in ranking if e["rank"] == 1}
+    assert best == {40: "B", 100: "A"}
+    assert sorted(e["rank"] for e in ranking) == [1, 1, 2, 2]
+    assert plot_condition_trend(ranking, "speed_kmh", ["geo"], "max_ld", tmp_path / "t.png").is_file()
