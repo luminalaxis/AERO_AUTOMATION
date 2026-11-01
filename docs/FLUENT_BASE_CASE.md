@@ -163,13 +163,25 @@ Controls는 기본값으로 시작합니다.
 | `contour-pressure` | Pressure → **Pressure Coefficient** | Filled 체크 |
 | `contour-velocity` | Velocity → **Velocity Magnitude** | Filled 체크 |
 
-Save/Display로 한 번 띄워 둡니다.
+- Surfaces는 **선택하지 않아도 됩니다** (비워 두면 영역 전체에 그림).
+- 아직 계산 결과가 없어서 `Compute`는 회색입니다. **Save → Close**만 하면 됩니다.
 
-### 저장 뷰 2개
-1. 그래픽 창에서 날개 전체와 지면이 함께 보이게 확대·이동
-2. `View > Views...`(또는 Viewing 탭의 Views) → Save Name에 **`near`** → Save
-3. 메인 뒷전과 플랩 사이 슬롯을 크게 확대
-4. 같은 방법으로 **`slot`** 저장
+### 저장 뷰 2개 (`near`, `slot`)
+결과가 없으니 메쉬를 띄운 상태에서 화면만 맞춥니다.
+
+1. `Results > Graphics > Mesh` 더블클릭 → Display (또는 General 패널의 Display...)
+2. 마우스로 화면 맞추기 (휠: 확대·축소, 드래그: 이동). 날개 전체와 바닥이 함께 보이게.
+3. 콘솔에 입력:
+   ```
+   /views/save-view near
+   ```
+4. 메인 뒷전과 플랩 사이 슬롯을 크게 확대한 뒤:
+   ```
+   /views/save-view slot
+   ```
+5. 확인: `/views/restore-view near` 를 입력하면 저장한 화면으로 돌아가야 합니다.
+
+GUI로는 상단 리본 **Viewing** 탭의 **Views...** 버튼 → Save Name 입력 → Save 입니다 (버전에 따라 위치가 다를 수 있어 콘솔 방법을 권장).
 
 ## 12. 동작 확인 (선택, 권장)
 
