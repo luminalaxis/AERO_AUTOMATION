@@ -40,6 +40,9 @@ class MeshSettings:
     wake_angles: list = None      # 뒷전에서 뻗는 후류선 각도 [deg] (받음각 범위를 덮도록)
     farfield_radius: float = 50.0 # 원거리 경계 반지름 [c]
     farfield_size: float = 5.0    # 원거리 경계 셀 크기 [c]
+    farfield_type: str = "pressure-far-field"  # (지면 없을 때) "pressure-far-field" = 원 전체 farfield 하나,
+                                  # "inlet-outlet" = 앞쪽 반원 inlet(velocity-inlet) + 뒤쪽 반원 outlet(pressure-outlet)
+                                  # (저속 비압축 해석용. 유입 각도는 inlet 속도 방향으로 지정)
     # 지면이 있을 때 (케이스 변수 ground_clearance): 직사각형 영역
     ground_upstream: float = 5.0     # 메인 앞전 ~ inlet 거리 [c]
     ground_downstream: float = 12.0  # 메인 앞전 ~ outlet 거리 [c]
@@ -56,6 +59,9 @@ class MeshSettings:
         obj = cls(**data)
         if obj.wake_angles is None:
             obj.wake_angles = [-10.0, 0.0, 10.0, 20.0]
+        if obj.farfield_type not in ("pressure-far-field", "inlet-outlet"):
+            raise ConfigError(f"[mesh] farfield_type은 'pressure-far-field' 또는 'inlet-outlet'이어야 합니다: "
+                              f"{obj.farfield_type!r}")
         return obj
 
     def first_cell_height(self) -> float:
@@ -113,14 +119,23 @@ def mesh_name(params: dict) -> str:
     return name
 
 
+# 케이스 변수로 바꿔도 메쉬 이름에 표시하지 않는 항목 (형상이 같으면 같은 메쉬로 취급)
+_IMPLICIT_SETTINGS = {"chord", "reynolds"}
+
+
 def make_job(params: dict, mesh_cfg: dict, meshes_dir: Path) -> MeshJob:
     if "main_airfoil" not in params:
         raise ConfigError("메쉬 생성에는 main_airfoil 변수가 필요합니다 ([constants] 또는 케이스에 지정).")
     geo = geometry_params(params)
     # [mesh] 항목과 같은 이름의 케이스 변수가 있으면 케이스 값 사용 (예: reynolds)
-    merged = {**mesh_cfg, **{k: params[k] for k in mesh_cfg.keys() | {f.name for f in fields(MeshSettings)} if k in params}}
-    settings = MeshSettings.from_dict(merged)
-    name = safe_name(mesh_name(geo))
+    setting_names = {f.name for f in fields(MeshSettings)}
+    overrides = {k: params[k] for k in setting_names if k in params}
+    settings = MeshSettings.from_dict({**mesh_cfg, **overrides})
+    name = mesh_name(geo)
+    # 메쉬 독립성 확인처럼 케이스 변수로 메쉬 설정(surface_cells 등)을 스윕하면 이름에 붙여 메쉬를 구분
+    for k in sorted(set(overrides) - _IMPLICIT_SETTINGS):
+        name += f"_{k}{_fmt(overrides[k])}"
+    name = safe_name(name)
     return MeshJob(name, meshes_dir / name, geo, settings)
 
 
@@ -173,7 +188,12 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
                 for a in (0, math.pi / 2, math.pi, 3 * math.pi / 2)]
         arcs = [geo.addCircleArc(ring[i], center, ring[(i + 1) % 4]) for i in range(4)]
         outer_loop = geo.addCurveLoop(arcs)
-        outer = {"farfield": (arcs, "pressure-far-field")}
+        if s.farfield_type == "inlet-outlet":
+            # arcs: 0 = 오른쪽 위, 1 = 왼쪽 위, 2 = 왼쪽 아래, 3 = 오른쪽 아래
+            outer = {"inlet": ([arcs[1], arcs[2]], "velocity-inlet"),
+                     "outlet": ([arcs[3], arcs[0]], "pressure-outlet")}
+        else:
+            outer = {"farfield": (arcs, "pressure-far-field")}
     else:
         # 지면 효과: 직사각형 영역. 아래 = 지면(wall, Fluent에서 moving wall), 앞 = inlet, 뒤 = outlet, 위 = symmetry
         far_size = s.ground_far_size

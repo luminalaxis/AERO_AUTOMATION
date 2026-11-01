@@ -5,19 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aero-automation"
 version = "0.1.0"
-description = "2D 익형/플랩 형상 최적화용 ANSYS Fluent 배치 해석 자동화"
+description = "2D 익형/플랩 형상 최적화용 ANSYS Fluent 배치 해석 자동화 + 에어포일 Cl/Cd 대리 모델"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["numpy", "matplotlib", "gmsh>=4.11"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+ml = ["scikit-learn", "lightgbm", "torch"]  # aero-auto train (LightGBM, MLP 앙상블)
 
 [project.scripts]
 aero-auto = "aero_automation.cli:main"
 
 [tool.setuptools]
-packages = ["aero_automation"]
+packages = ["aero_automation", "aero_automation.surrogate"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

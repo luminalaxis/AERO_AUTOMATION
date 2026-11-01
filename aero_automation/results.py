@@ -7,6 +7,8 @@ import math
 import re
 from pathlib import Path
 
+import numpy as np
+
 from .cases import Case
 from .config import ProjectConfig, safe_name
 from .meshing import mesh_name
@@ -80,6 +82,62 @@ def _wind_axes(row: dict, aoa_key: str) -> None:
         row["cd" + suffix] = cx * math.cos(a) + cy * math.sin(a)
 
 
+def _cl_cd_series(path: Path, row: dict, aoa_key: str):
+    """리포트 파일에서 전체 형상의 (cl, cd) 반복 이력을 꺼낸다. cx/cy면 받음각으로 회전."""
+    headers, rows = parse_report_file(path)
+    if not rows:
+        return None
+    lower = [h.lower() for h in headers]
+    arr = np.array(rows)
+    if "cl" in lower and "cd" in lower:
+        return arr[:, lower.index("cl")], arr[:, lower.index("cd")]
+    if "cx" in lower and "cy" in lower:
+        angle = row.get("flow_angle", row.get(aoa_key))
+        if not isinstance(angle, (int, float)):
+            return None
+        a = math.radians(angle)
+        cx, cy = arr[:, lower.index("cx")], arr[:, lower.index("cy")]
+        sign = -1.0 if row.get("downforce") else 1.0
+        return sign * (cy * math.cos(a) - cx * math.sin(a)), cx * math.cos(a) + cy * math.sin(a)
+    return None
+
+
+def classify_convergence(cl: np.ndarray, cd: np.ndarray, window: int, tol: float) -> dict:
+    """평균 구간(마지막 window개 반복)의 변동으로 수렴 상태를 판정한다.
+
+    지표 = max(표준편차, 앞·뒤 절반 평균 차이) / 기준값. 기준값은 Cl은 max(|Cl|, 0.1), Cd는 |Cd|.
+    지표 ≤ tol 이면 "converged", 아니면 "oscillating"(진동 또는 아직 변하는 중 → 평균값 사용).
+    """
+    cl, cd = cl[-max(2, window):], cd[-max(2, window):]
+    half = len(cl) // 2
+    out = {"cl_std": float(cl.std()), "cd_std": float(cd.std())}
+    cl_scale = max(abs(float(cl.mean())), 0.1)
+    cd_scale = max(abs(float(cd.mean())), 1e-6)
+    drift_cl = abs(float(cl[half:].mean() - cl[:half].mean()))
+    drift_cd = abs(float(cd[half:].mean() - cd[:half].mean()))
+    metric = max(out["cl_std"] / cl_scale, out["cd_std"] / cd_scale, drift_cl / cl_scale, drift_cd / cd_scale)
+    out["conv_metric"] = metric
+    out["convergence"] = "converged" if metric <= tol else "oscillating"
+    return out
+
+
+def _convergence(row: dict, files: list[Path], cfg: ProjectConfig) -> None:
+    """수렴 상태 열(convergence): converged / oscillating / diverged / timeout / failed."""
+    state = row.get("state")
+    if state == "failed":
+        msg = str(row.get("message", "")).lower()
+        row["convergence"] = ("diverged" if "divergence" in msg or "floating point" in msg
+                              else "timeout" if "시간 초과" in msg else "failed")
+        return
+    if state != "done":
+        return
+    for path in files:
+        series = _cl_cd_series(path, row, cfg.results.x_param)
+        if series is not None:
+            row.update(classify_convergence(*series, cfg.results.average_last, cfg.results.converge_tol))
+            return
+
+
 def summarize_case(cfg: ProjectConfig, case: Case) -> dict:
     status = read_status(case)
     row = {"case": case.name, "group": case.group, **case.params}
@@ -88,6 +146,8 @@ def summarize_case(cfg: ProjectConfig, case: Case) -> dict:
         # 형상 이름 (받음각 제외): 지면 모드에서는 메쉬가 받음각마다 다르므로 순위·비교는 이 이름으로
         row["geometry"] = mesh_name({k: v for k, v in case.params.items() if k != cfg.results.x_param})
     row["state"] = status.get("state", "pending")
+    if status.get("message"):
+        row["message"] = status["message"]
     row["elapsed_min"] = round(status["elapsed_sec"] / 60, 2) if status.get("elapsed_sec") else ""
     files = sorted({p for pattern in cfg.results.report_files for p in case.dir.glob(pattern)})
     for path in files:
@@ -99,6 +159,7 @@ def summarize_case(cfg: ProjectConfig, case: Case) -> dict:
             row[column] = value
     if cfg.results.wind_axes:
         _wind_axes(row, cfg.results.x_param)
+    _convergence(row, files, cfg)
     if isinstance(row.get("cl"), float) and isinstance(row.get("cd"), float) and row["cd"]:
         row["l/d"] = row["cl"] / row["cd"]
     _forces_per_span(row)

@@ -1,0 +1,54 @@
+# 신뢰성 검증: Re 2e5에서 k-ω SST vs Transition SST 비교 (형상 일부)
+#   aero-auto -c project_tsst.toml run
+#   aero-auto -c project_tsst.toml collect     → runs_tsst/summary.csv
+#   aero-auto dataset                          → runs/surrogate/turbulence_comparison.csv (project.toml의 compare_summary)
+#
+# 메쉬 설정은 project.toml과 같게 둬야 난류 모델 차이만 비교됩니다.
+
+[project]
+name = "airfoil_surrogate_tsst"
+template = "journal.jou"
+output_dir = "runs_tsst"
+max_parallel = 1
+
+[solver]
+kind = "fluent"
+mode = "2ddp"
+processes = 4
+graphics = false
+timeout_minutes = 40
+
+[constants]
+base_case = "base_1el_tsst.cas.h5"   # Viscous만 Transition SST로 바꾼 베이스 케이스
+chord = 1.0
+iterations = 4000
+
+[cases]
+csv = "airfoils_tsst.csv"
+name = "{foil}_Re{re_k}k_a{aoa}"
+group = "{foil}"
+
+[cases.sweep]
+re_k = [200]
+aoa = [-4, -2, 0, 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 16]
+
+[derived]
+reynolds = "re_k * 1000"
+velocity = "reynolds * 1.7894e-5 / (1.225 * chord)"
+mach = "velocity / 340.29"
+
+[mesh]
+farfield_type = "inlet-outlet"
+farfield_radius = 50
+y_plus = 1.0
+growth_rate = 1.15
+surface_cells = 200
+near_size = 0.01
+wake_angles = [-5, 0, 5, 10, 15, 20]
+
+[results]
+report_files = ["*.out"]
+average_last = 500
+converge_tol = 0.01
+x_param = "aoa"
+wind_axes = true

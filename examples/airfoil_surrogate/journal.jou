@@ -1,0 +1,35 @@
+; ============================================================
+; AERO_AUTOMATION 저널 템플릿 (단일 에어포일, 자유류, 비압축)
+;  - 달러+중괄호 표기는 케이스마다 자동 치환됩니다
+;    (velocity: Re로 계산한 유속, flow_angle: 받음각, chord: 코드 [m], mesh_file: 형상별 메쉬)
+;  - 메쉬 경계: main(wall), inlet(앞쪽 반원, velocity-inlet), outlet(뒤쪽 반원, pressure-outlet)
+;  - 받음각은 inlet 속도 방향(Named Expression flow_angle)으로 준다 → 형상당 메쉬 1개를 모든 받음각·Re가 공유
+;
+;  준비물: base_1el_sst.cas.h5 (Transition SST 비교용은 base_1el_tsst.cas.h5)
+;          → docs/FLUENT_BASE_CASE_AIRFOIL.md
+; ============================================================
+
+/file/read-case "${project_dir}/${base_case}"
+
+/file/replace-mesh "${mesh_file}"
+/mesh/check
+
+; 유입 조건: inlet 속도 성분이 Named Expression speed, flow_angle을 참조
+/define/named-expressions/edit "speed" definition "${velocity:.6f} [m/s]" q
+/define/named-expressions/edit "flow_angle" definition "${flow_angle} [deg]" q
+
+; 기준값 (Re마다 속도가 달라 매번 갱신)
+/report/reference-values/velocity ${velocity:.6f}
+/report/reference-values/density 1.225
+/report/reference-values/length ${chord}
+/report/reference-values/area ${chord}
+
+; 리포트 파일: cx, cy (물체축 힘계수) + yplus-avg, yplus-max
+/solve/report-files/edit "coef-rfile" file-name "coef-rfile.out" q
+
+/solve/initialize/hyb-initialization
+/solve/iterate ${iterations}
+
+/file/write-case-data "result.cas.h5"
+
+/exit yes

@@ -6,6 +6,11 @@
     python -m aero_automation run      # 배치 실행 (완료된 케이스는 건너뜀)
     python -m aero_automation status   # 케이스별 진행 상태
     python -m aero_automation collect  # 결과 요약 CSV, 순위, 그래프 생성
+
+    대리 모델 (aero_automation.surrogate):
+    python -m aero_automation dataset  # summary.csv → 학습 데이터(CST 계수, 받음각, log10Re → Cl, log10Cd) + 분할
+    python -m aero_automation train    # 기준 방법 / LightGBM / MLP 앙상블 학습·평가
+    python -m aero_automation compare  # 실험 비교표
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ import argparse
 import sys
 from collections import Counter
 
-from .cases import build_cases, filter_cases
+from .cases import build_cases, filter_cases, split_part
 from .config import ConfigError, load_config
 from .expr import ExpressionError
 from .results import collect
@@ -23,7 +28,10 @@ from .runner import build_command, ensure_meshes, mark_screened, prepare_case, r
 
 def _load(args):
     cfg = load_config(args.config)
-    cases = filter_cases(build_cases(cfg), args.only)
+    cases = build_cases(cfg)
+    if getattr(args, "part", None):
+        cases = split_part(cases, args.part)
+    cases = filter_cases(cases, args.only)
     if not cases:
         raise ConfigError("조건에 맞는 케이스가 없습니다.")
     return cfg, cases
@@ -183,6 +191,73 @@ def cmd_collect(args) -> int:
     return 0
 
 
+def _surrogate(args):
+    from .surrogate.dataset import SurrogateConfig
+
+    cfg = load_config(args.config)
+    return cfg, SurrogateConfig.from_project(cfg)
+
+
+def cmd_dataset(args) -> int:
+    from .surrogate.dataset import build_dataset
+
+    cfg, sc = _surrogate(args)
+    r = build_dataset(cfg, sc, args.summary or [])
+    print(r["report"])
+    print(f"학습 데이터: {r['dir']}  (dataset.csv, shapes.csv, split.json, data_report.md)")
+    return 0
+
+
+def _train_specs(args) -> list[dict]:
+    from .surrogate.experiment import SUITES
+
+    if args.suite:
+        names = list(SUITES) if args.suite == "all" else [args.suite]
+        return [dict(s) for n in names for s in SUITES[n]]
+    if not args.model:
+        raise ConfigError("--model (baseline, lgbm, mlp) 또는 --suite (plan, week14, all)를 지정하세요.")
+    spec = {"model": args.model, "n_cst": args.cst, "stall_weight": args.stall_weight, "add_ood": args.add_ood}
+    if args.calibrate:
+        spec["calibrate"] = "conformal"
+    if args.hidden:
+        spec["hidden"] = [int(h) for h in args.hidden.split(",")]
+    for key in ("tag", "epochs", "ensemble"):
+        if getattr(args, key):
+            spec["n_models" if key == "ensemble" else key] = getattr(args, key)
+    return [spec]
+
+
+def cmd_train(args) -> int:
+    from .surrogate.experiment import compare, run_experiment
+
+    cfg, sc = _surrogate(args)
+    if args.epochs is not None and args.epochs <= 0:
+        raise ConfigError("--epochs는 1 이상이어야 합니다.")
+    for spec in _train_specs(args):
+        r = run_experiment(cfg, sc, spec)
+        parts = []
+        for name in ("test", "ood_holdout"):
+            m = r["sets"].get(name)
+            if m:
+                cov = f", 포함률 Cl {m['cl_coverage']:.2f}" if "cl_coverage" in m else ""
+                parts.append(f"{name}: Cl MAE {m['cl_mae']:.3f}, log10Cd MAE {m['log10cd_mae']:.3f}{cov}")
+        print(f"  → {r['tag']} ({r['train_seconds']}s)  " + " | ".join(parts))
+    c = compare(cfg, sc)
+    print("\n" + c["text"])
+    print(f"비교표: {c['csv']}")
+    return 0
+
+
+def cmd_compare(args) -> int:
+    from .surrogate.experiment import compare
+
+    cfg, sc = _surrogate(args)
+    c = compare(cfg, sc)
+    print(c["text"])
+    print(f"비교표: {c['csv']}")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="aero-auto", description="ANSYS 해석 케이스 배치 자동화")
     parser.add_argument("-c", "--config", default="project.toml", help="프로젝트 설정 파일 (기본: project.toml)")
@@ -192,6 +267,8 @@ def main(argv=None) -> int:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--only", nargs="+", metavar="PATTERN",
                        help="케이스/그룹 이름 필터 (와일드카드 가능, 예: 'M0.3*')")
+        p.add_argument("--part", metavar="K/N",
+                       help="형상 단위로 N등분한 것 중 K번째만 (팀원 분담용, 예: 2/4)")
         p.set_defaults(func=func)
         return p
 
@@ -207,6 +284,27 @@ def main(argv=None) -> int:
     p.add_argument("--all", action="store_true", help="스크리닝 결과 무시하고 전체 케이스 실행")
     add("status", cmd_status, "진행 상태 확인")
     add("collect", cmd_collect, "결과 요약 CSV, 형상 순위, 그래프 생성")
+
+    p = sub.add_parser("dataset", help="대리 모델 학습 데이터 생성 (summary.csv → CST 계수 + 분할)")
+    p.add_argument("--summary", nargs="+", metavar="CSV",
+                   help="[surrogate] summaries 외에 합칠 결과 요약 파일 (팀원별 summary.csv)")
+    p.set_defaults(func=cmd_dataset)
+    p = sub.add_parser("train", help="대리 모델 학습·평가 (실험 하나 또는 --suite)")
+    p.add_argument("--suite", choices=["plan", "week14", "all"],
+                   help="기획서 실험 묶음: plan(기준·비교 모델·실험 1·2), week14(실속 가중치·분포 밖 추가)")
+    p.add_argument("--model", choices=["baseline", "lgbm", "mlp"])
+    p.add_argument("--cst", type=int, choices=[16, 8], default=16, help="형상 계수 수 (기본 16)")
+    p.add_argument("--hidden", help="MLP 은닉층 크기, 쉼표 구분 (기본 128,128)")
+    p.add_argument("--ensemble", type=int, help="MLP 앙상블 개수 (기본 5)")
+    p.add_argument("--epochs", type=int, help="MLP 최대 epoch (기본 2000, 조기 종료)")
+    p.add_argument("--stall-weight", type=float, default=1.0, help="실속 부근(near/post stall) 학습 가중치")
+    p.add_argument("--add-ood", action="store_true", help="분포 밖 형상 일부(ood_addable)를 학습에 추가")
+    p.add_argument("--calibrate", action="store_true",
+                   help="검증 세트로 예측 구간을 등각(conformal) 보정 ([surrogate] calibrate 대신)")
+    p.add_argument("--tag", help="실험 폴더 이름 (기본: 설정으로 자동)")
+    p.set_defaults(func=cmd_train)
+    p = sub.add_parser("compare", help="대리 모델 실험 비교표")
+    p.set_defaults(func=cmd_compare)
 
     args = parser.parse_args(argv)
     try:

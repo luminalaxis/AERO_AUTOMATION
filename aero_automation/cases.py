@@ -148,3 +148,26 @@ def filter_cases(cases: list[Case], patterns: list[str] | None) -> list[Case]:
         c for c in cases
         if any(fnmatch(c.name, p) or fnmatch(c.group, p) for p in patterns)
     ]
+
+
+def split_part(cases: list[Case], part: str) -> list[Case]:
+    """--part K/N: 형상(메쉬) 단위로 케이스를 N등분해 K번째 몫만 남긴다.
+
+    같은 형상의 케이스(받음각·Re만 다름)는 항상 같은 몫에 들어가 메쉬를 한 사람만 만든다.
+    형상 이름을 정렬해 번갈아 배정하므로 설정 파일이 같으면 누가 실행해도 같은 결과가 나온다.
+    """
+    try:
+        k, n = (int(x) for x in part.split("/"))
+    except ValueError as exc:
+        raise ConfigError(f"--part 형식은 K/N 입니다 (예: 2/4): {part!r}") from exc
+    if not 1 <= k <= n:
+        raise ConfigError(f"--part K/N 에서 1 ≤ K ≤ N 이어야 합니다: {part!r}")
+
+    def key(c: Case) -> str:
+        if c.mesh is not None:
+            return c.mesh.name
+        return str(c.params.get("main_airfoil", c.group or c.name))
+
+    keys = sorted({key(c) for c in cases})
+    mine = {kk for i, kk in enumerate(keys) if i % n == k - 1}
+    return [c for c in cases if key(c) in mine]

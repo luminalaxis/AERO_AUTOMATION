@@ -5,6 +5,8 @@
 2D **다요소 날개(메인 + 슬롯 플랩 1~2개)** 형상 최적화를 위한 ANSYS Fluent 배치 해석 자동화 도구입니다. 예제는 **지면 효과를 받는 다운포스용 뒤집힌 날개**(움직이는 바닥, 지상고 30~60 mm)이고, 형상 순위 기준은 **최대 다운포스**(`objective = "max_cl"`)입니다.
 2단(메인 + 플랩 1개)·3단(메인 + 플랩 2개) 구성의 형상(익형, 요소별 코드 길이, 플랩 각도, 갭, 오버랩) × 지상고 × 받음각 × 속도 케이스를 만들고, **저충실도 해석으로 가망 없는 케이스를 미리 걸러낸 뒤**, 형상마다 메쉬를 자동 생성해 Fluent로 돌리고 Cl/Cd 정리, 형상 순위, 이미지 저장까지 한 번에 처리합니다.
 
+> **에어포일 Cl/Cd 대리 모델 (텀프로젝트):** 단일 에어포일 120개 × 받음각 14 × Re 2 의 Fluent 결과로 CST 계수 → Cl, log₁₀Cd 회귀 모델(얇은 익형 이론 기준, LightGBM 분위 회귀, MLP 앙상블)을 만들고 조건별 성능·부트스트랩 신뢰구간·예측 구간 포함률로 검증하는 흐름은 [docs/AIRFOIL_SURROGATE.md](docs/AIRFOIL_SURROGATE.md)와 `examples/airfoil_surrogate/`를 보세요 (`aero-auto dataset` / `train` / `compare`).
+
 ```
 project.toml (2단/3단 세트, 형상·지상고·받음각·속도 스윕)
    │ screen 패널법(+지면 거울상) + 경계층 근사로 전 케이스 추정 (병렬)
@@ -65,6 +67,7 @@ aero-auto collect          # 결과 다시 정리 (summary, ranking, 그래프)
 
 - `--only "2el_4412c375*"`: 일부 케이스만 실행 (와일드카드, 그룹 이름도 가능)
 - `-j 2`: 동시 실행 수 (라이선스와 코어 수 고려)
+- `--part 2/4`: 형상(메쉬) 단위로 4등분한 것 중 2번째만 실행 (여러 사람·PC 분담). 같은 형상의 케이스는 항상 같은 몫에 들어갑니다.
 - 중단돼도 다시 `run` 하면 완료된 케이스와 이미 만든 메쉬는 건너뜁니다. 전부 다시 하려면 `run --force`, `mesh --force`.
 - `screen`을 한 번 돌리면 이후 `mesh`, `run`은 제외된 케이스를 자동으로 건너뜁니다(상태 `screened`). 스크리닝을 무시하려면 `--all`.
 - 실패 판정: 종료 코드, 로그의 `Error:` / `Divergence detected`, 시간 초과(`timeout_minutes`), 메쉬 생성 실패.
@@ -226,12 +229,13 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 | `near_size`, `wake_size` | 0.01, 0.01 | 물체 주변 / 후류 셀 크기 [메인 코드] |
 | `wake_length`, `wake_angles` | 3.0, [-10, 0, 10, 20] | 후류 세분화 길이와 방향 (받음각 범위를 덮도록) |
 | `farfield_radius`, `farfield_size` | 50, 5.0 | (지면 없을 때) 원거리 경계 반지름과 셀 크기 [메인 코드] |
+| `farfield_type` | `"pressure-far-field"` | (지면 없을 때) `"inlet-outlet"`이면 앞쪽 반원 `inlet`(velocity-inlet) + 뒤쪽 반원 `outlet`(pressure-outlet). 저속 비압축 해석용, 받음각은 inlet 속도 방향으로 |
 | `ground_upstream`, `ground_downstream`, `ground_height` | 5, 12, 6 | (지면 있을 때) 메인 앞전~inlet, 메인 앞전~outlet, 지면~위쪽 경계 [메인 코드] |
 | `ground_far_size` | 0.5 | (지면 있을 때) inlet/outlet/top 근처 셀 크기 [메인 코드] |
 | `min_quality` | 0.05 | 최소 셀 품질 (삼각형 SICN, 사각형 scaled Jacobian). 미달 시 경계층을 얇게 해서 재시도 |
 
 경계 이름은 `main`, `flap1`, `flap2`(wall)와, 지면이 있으면 `ground`(wall), `inlet`(velocity-inlet), `outlet`(pressure-outlet), `top`(symmetry), 지면이 없으면 `farfield`(pressure-far-field)입니다. 셀 영역은 `fluid`입니다. 같은 구성(2단 또는 3단) 안에서는 이름이 같아서 Fluent에서 메쉬만 교체해도 설정이 유지됩니다. 슬롯마다(메인↔플랩1, 플랩1↔플랩2) 그 슬롯의 최소 간격 기준으로 세분화합니다.
-`[mesh]` 항목과 같은 이름의 케이스 변수가 있으면 케이스 값이 우선합니다. 단 `reynolds`는 형상 안에서 가장 큰 값을 써서 속도가 달라도 메쉬를 공유합니다.
+`[mesh]` 항목과 같은 이름의 케이스 변수가 있으면 케이스 값이 우선합니다. 단 `reynolds`는 형상 안에서 가장 큰 값을 써서 속도가 달라도 메쉬를 공유합니다. `surface_cells`처럼 메쉬 설정을 케이스 변수로 바꾸면 메쉬 이름에 그 설정이 붙어(예: `NACA0012_c1_surface_cells350`) 따로 만들어지므로, 케이스 세트로 메시 독립성 확인을 한 번에 돌릴 수 있습니다(`examples/airfoil_surrogate/project_mesh.toml`).
 
 메쉬 독립성은 기준 형상 하나로 `surface_cells`, `near_size` 등을 2~3단계 바꿔 Cl/Cd가 수렴하는지 확인한 뒤, 최적화 동안에는 설정을 고정하는 것을 권장합니다. 설정이 같아야 형상 간 비교에서 메쉬 차이로 생기는 노이즈가 줄어듭니다.
 
@@ -304,6 +308,19 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 
 결과값은 마지막 `average_last`개 iteration의 평균입니다. 진동하며 수렴하는 경우를 대비한 것으로, `convergence.png`로 수렴 여부를 함께 확인하세요.
 
+`summary.csv`에는 수렴 상태도 기록됩니다.
+
+| 열 | 내용 |
+|---|---|
+| `convergence` | `converged` / `oscillating` / `diverged` / `timeout` / `failed` (아래 기준) |
+| `cl_std`, `cd_std` | 평균 구간(마지막 `average_last`회)의 표준편차 |
+| `conv_metric` | max(표준편차, 앞·뒤 절반 평균 차이) ÷ 기준값 (Cl은 max(\|Cl\|, 0.1), Cd는 \|Cd\|) |
+| `message` | 실패 사유 (로그 오류, 종료 코드, 시간 초과, 메쉬 실패) |
+
+- `conv_metric` ≤ `[results] converge_tol`(기본 0.01)이면 `converged`, 넘으면 `oscillating`(값은 평균)입니다.
+- 실패 케이스는 로그에 `Divergence`가 있으면 `diverged`, 시간 초과면 `timeout`입니다.
+- Fluent 리포트 파일에 y+ 리포트(예: `yplus-avg`, `yplus-max`)를 넣으면 다른 리포트처럼 열로 정리됩니다.
+
 ## 설정 파일 전체 구조 (`project.toml`)
 
 | 섹션 | 내용 |
@@ -316,8 +333,9 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 | `[[cases.set]]` | 케이스 세트: `label`, `constants`, `sweep`, `name`, `group` |
 | `[derived]` | 계산 변수, 예: `velocity = "speed_kmh / 3.6"` |
 | `[mesh]` | 위 메쉬 설정. 섹션이 없으면 메쉬 생성 없이 기존 방식으로 동작 |
-| `[results]` | `report_files`, `average_last`, `x_param`, `wind_axes`, `objective`(`max_ld`/`max_cl`), `split_by`(조건별 분석 변수) |
+| `[results]` | `report_files`, `average_last`, `converge_tol`, `x_param`, `wind_axes`, `objective`(`max_ld`/`max_cl`), `split_by`(조건별 분석 변수) |
 | `[screening]` | 스크리닝 설정 (위 표 참고) |
+| `[surrogate]` | 대리 모델 데이터·평가 설정 ([docs/AIRFOIL_SURROGATE.md](docs/AIRFOIL_SURROGATE.md)) |
 
 저널 템플릿에서 쓸 수 있는 변수는 모든 케이스 변수(`case_set`, `base_case` 등 포함)에 더해 `${case_name}`, `${group}`, `${case_dir}`, `${project_dir}`, `${nprocs}`, `${mesh_file}`, `${mesh_name}`입니다. 포맷 지정도 됩니다: `${aoa:.2f}`.
 
@@ -332,3 +350,4 @@ pytest
 ```
 
 실제 Fluent 대신 가짜 솔버(`tests/fake_solver.py`)로 2단·3단 형상 배치 정확도(mm 단위 갭), Fluent 메쉬 면 방향 규칙, 패널법 이론값, 케이스 세트, 세트·속도별 스크리닝 선별과 실행 반영, 메쉬 생성부터 해석, cl/cd 변환, 순위, 그래프까지의 전체 흐름을 검증합니다.
+대리 모델 쪽(`tests/test_surrogate.py`)은 CST 피팅·얇은 익형 이론 α₀, 수렴 판정, 형상 단위 분담, inlet-outlet 메쉬, 합성 결과로 데이터 생성 → 학습(기준 방법, LightGBM, MLP) → 평가 → 비교표까지 검증합니다. LightGBM·PyTorch 테스트는 `pip install -e ".[ml]"`이 돼 있을 때만 실행됩니다.

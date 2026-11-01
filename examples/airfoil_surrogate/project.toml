@@ -1,0 +1,78 @@
+# 에어포일 Cl/Cd 대리 모델용 데이터 생성 (인공지능개론 텀프로젝트 기획서)
+#   형상 120개(NACA 약 60 + UIUC 약 60) × 받음각 14개 × Re 2개(2e5, 5e5) ≈ 3,400 케이스
+#   정답: Fluent 2D k-ω SST (비압축, 자유류). 받음각은 유입 방향으로 → 형상당 메쉬 1개
+#
+#   python fetch_uiuc.py            # UIUC 좌표 내려받기 + airfoils.csv 갱신 (처음 1회)
+#   aero-auto plan --dry-run        # 케이스 확인
+#   aero-auto run --part 1/4        # 팀원 4명이 1/4 ~ 4/4 를 나눠 실행 (형상 단위로 나뉨)
+#   aero-auto collect               # runs/summary.csv (수렴 상태·y+ 포함)
+#   aero-auto dataset --summary ../member2/runs/summary.csv ...   # 팀원 결과 합치기 → 학습 데이터
+#   aero-auto train --suite plan    # 기준 방법·LightGBM·MLP + 실험 1·2
+#   aero-auto train --suite week14  # 실속 가중치 / 분포 밖 형상 추가
+#
+#   ※ screen(저충실도 선별)은 쓰지 마세요. 학습 데이터에서 실속 이후 케이스가 빠져 편향이 생깁니다.
+
+[project]
+name = "airfoil_surrogate"
+template = "journal.jou"
+output_dir = "runs"
+max_parallel = 1             # 동시 실행 케이스 수 (라이선스/코어 수 고려)
+
+[solver]
+kind = "fluent"
+# executable = 'C:\Program Files\ANSYS Inc\v261\fluent\ntbin\win64\fluent.exe'
+mode = "2ddp"
+processes = 4
+graphics = false             # 이미지 없이 계수만 (케이스가 많아서)
+timeout_minutes = 30
+
+[constants]
+base_case = "base_1el_sst.cas.h5"
+chord = 1.0                  # 코드 [m]. 메쉬 스케일, 기준 길이
+iterations = 3000            # 고정 반복 수 (마지막 500회 평균, 진동 여부 판정)
+
+[cases]
+csv = "airfoils.csv"         # 열: main_airfoil (NACA4412 또는 airfoils/e387.dat), foil (이름), source (naca/uiuc)
+name = "{foil}_Re{re_k}k_a{aoa}"
+group = "{foil}"
+
+[cases.sweep]
+re_k = [200, 500]            # Re / 1000
+aoa = [-4, -2, 0, 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 16]   # [deg] 11~16°는 1° 간격 (실속 부근)
+
+[derived]                    # Fluent 기본 공기 물성: ρ = 1.225 kg/m³, μ = 1.7894e-5 Pa·s
+reynolds = "re_k * 1000"
+velocity = "reynolds * 1.7894e-5 / (1.225 * chord)"   # Re = ρVc/μ → V [m/s]
+mach = "velocity / 340.29"
+
+[mesh]
+# 형상마다 메쉬 1개 (받음각·Re 공유). 첫 셀 높이는 그 형상의 최고 Re(5e5) 기준 → 두 Re 모두 y+ ≤ 1
+farfield_type = "inlet-outlet"   # 앞쪽 반원 inlet + 뒤쪽 반원 outlet (비압축)
+farfield_radius = 50
+y_plus = 1.0
+growth_rate = 1.15
+surface_cells = 200
+near_size = 0.01
+wake_angles = [-5, 0, 5, 10, 15, 20]   # 받음각 −4~16°의 후류 방향을 덮도록
+
+[results]
+report_files = ["*.out"]
+average_last = 500           # 진동 케이스: 마지막 500회 평균 (기획서 라벨 규칙)
+converge_tol = 0.01          # 마지막 500회의 Cl/Cd 변동 1% 이하면 converged, 넘으면 oscillating
+x_param = "aoa"
+wind_axes = true             # cx, cy → cl, cd
+objective = "max_ld"
+split_by = ["re_k"]
+
+[surrogate]
+summaries = ["runs/summary.csv"]     # 팀원별 결과를 합치려면 경로를 더 넣거나 dataset --summary
+compare_summary = "runs_tsst/summary.csv"   # Transition SST 비교 (project_tsst.toml 결과, 없으면 생략)
+output_dir = "runs/surrogate"
+ood_camber = 0.045           # 최대 캠버 4.5% 이상 → 분포 밖 평가 세트 (NACA 5·6계열, 고캠버 UIUC)
+ood_airfoils = []            # 추가로 분포 밖에 둘 익형 이름 (예: ["s1223"])
+ood_add_fraction = 0.3       # 14주차: 분포 밖 형상 중 30%를 학습에 추가하는 실험
+split = [0.70, 0.15, 0.15]   # 학습 / 검증 / 평가 (형상 단위, 출처별로)
+seed = 0
+stall_margin = 2.0           # regime_truth: α_clmax ± 2° = near_stall
+interval = 0.90              # 예측 구간
+bootstrap = 1000             # 형상 단위 부트스트랩 반복 수

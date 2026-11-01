@@ -1,0 +1,73 @@
+# 신뢰성 검증: NACA 0012 메시 독립성 (거친 / 기준 / 조밀)
+#   aero-auto -c project_mesh.toml run
+#   aero-auto -c project_mesh.toml collect     → runs_mesh/summary.csv, runs_mesh/plots/
+#
+# 메쉬 설정을 케이스 변수(세트 constants)로 바꾸면 메쉬 이름에 설정이 붙어 따로 만들어집니다.
+# 기준(medium)은 project.toml의 [mesh]와 같아야 합니다. Cl·Cd 변화가 medium↔fine에서 충분히 작으면 medium 채택.
+# 풍동 실측 비교는 같은 조건의 실험값(예: NACA 0012, Re 5e5 부근)을 따로 준비해 runs_mesh/summary.csv와 비교합니다.
+
+[project]
+name = "airfoil_mesh_study"
+template = "journal.jou"
+output_dir = "runs_mesh"
+max_parallel = 1
+
+[solver]
+kind = "fluent"
+mode = "2ddp"
+processes = 4
+graphics = false
+timeout_minutes = 60
+
+[constants]
+base_case = "base_1el_sst.cas.h5"
+main_airfoil = "NACA0012"
+chord = 1.0
+iterations = 3000
+
+[cases]
+name = "{case_set}_Re{re_k}k_a{aoa}"
+group = "{case_set}"
+
+[cases.sweep]
+re_k = [200, 500]
+aoa = [0, 4, 8, 12, 14, 16]
+
+[[cases.set]]
+label = "coarse"
+[cases.set.constants]
+surface_cells = 120
+near_size = 0.02
+growth_rate = 1.2
+
+[[cases.set]]
+label = "medium"             # = project.toml [mesh]
+[cases.set.constants]
+surface_cells = 200
+near_size = 0.01
+growth_rate = 1.15
+
+[[cases.set]]
+label = "fine"
+[cases.set.constants]
+surface_cells = 350
+near_size = 0.005
+growth_rate = 1.1
+
+[derived]
+reynolds = "re_k * 1000"
+velocity = "reynolds * 1.7894e-5 / (1.225 * chord)"
+mach = "velocity / 340.29"
+
+[mesh]
+farfield_type = "inlet-outlet"
+farfield_radius = 50
+y_plus = 1.0
+wake_angles = [-5, 0, 5, 10, 15, 20]
+
+[results]
+report_files = ["*.out"]
+average_last = 500
+converge_tol = 0.01
+x_param = "aoa"
+wind_axes = true

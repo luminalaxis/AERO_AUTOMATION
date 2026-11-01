@@ -43,6 +43,7 @@ class SolverConfig:
 class ResultsConfig:
     report_files: list[str] = field(default_factory=lambda: ["*.out"])
     average_last: int = 1  # 마지막 N개 반복의 평균을 결과값으로 사용
+    converge_tol: float = 0.01  # 평균 구간의 Cl/Cd 변동(표준편차·추세)이 이 비율 이하면 "converged", 넘으면 "oscillating"
     error_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_ERROR_PATTERNS))
     summary_file: str = "summary.csv"
     x_param: str = "aoa"  # 그래프 x축 / 받음각 변수 이름
@@ -69,6 +70,7 @@ class ProjectConfig:
     screening: dict | None
     solver: SolverConfig
     results: ResultsConfig
+    surrogate: dict | None = None  # [surrogate]: 대리 모델 데이터/학습 설정 (aero_automation.surrogate)
 
     @property
     def root(self) -> Path:
@@ -130,4 +132,5 @@ def load_config(path: str | Path) -> ProjectConfig:
         screening=data.get("screening"),
         solver=solver,
         results=results,
+        surrogate=data.get("surrogate"),
     )
