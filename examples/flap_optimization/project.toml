@@ -1,0 +1,112 @@
+# 2D 다요소 다운포스 날개(뒤집힌 날개) 지면 효과 형상 최적화 예제: 2단(메인 + 플랩 1개)과 3단(메인 + 플랩 2개)
+#   길이 단위는 모두 mm (코드, 갭, 오버랩, 지상고)
+#   메인 코드 300~450 mm, 플랩 코드 80~150 mm, 지상고 30~60 mm, 속도 40~100 km/h
+#   지면은 움직이는 바닥(moving wall), 받음각은 메인 앞전 기준 회전
+#   aero-auto screen 으로 속도별 저충실도 선별 후 가망 있는 케이스만 CFD 실행
+
+[project]
+name = "flap_optimization"
+template = "journal.jou"     # 케이스마다 치환될 Fluent 저널
+output_dir = "runs"
+max_parallel = 1             # 동시에 돌릴 케이스 수 (라이선스/코어 수 고려)
+
+[solver]
+kind = "fluent"
+# 비워두면 AWP_ROOTxxx 환경변수로 최신 버전 자동 탐색
+# executable = 'C:\Program Files\ANSYS Inc\v261\fluent\ntbin\win64\fluent.exe'
+mode = "2ddp"
+processes = 4
+graphics = true              # Fluent 컨투어 이미지 저장 (Windows: -hidden 으로 실행)
+timeout_minutes = 60
+
+[constants]                  # 모든 케이스 공통 (세트/스윕 값이 우선)
+downforce = true             # 뒤집힌 날개: 형상을 위아래로 뒤집고, 양의 aoa = 다운포스 증가 방향
+                             # 결과의 cl 은 다운포스 계수(아래 방향 +), 힘은 downforce_N_per_m
+ground_ref = "lowest"        # 지상고 기준: "lowest" = 날개 최하단~지면, "main_le" = 메인 앞전~지면
+iterations = 2000
+
+[cases]
+group = "{case_set}_{main_airfoil}c{main_chord}_h{ground_clearance}"   # 분류 폴더: 세트 × 메인 형상 × 지상고
+
+[cases.sweep]                # 공통 스윕: 2단·3단 모두에 적용
+main_airfoil = ["2412", "4412"]  # NACA 4자리 또는 좌표 파일 (예: "airfoils/main.dat")
+main_chord = [300, 375, 450]     # 메인 코드 [mm]
+ground_clearance = [30, 40, 50, 60]  # 지상고 [mm]
+aoa = [0, 4, 8, 12, 16, 20]      # [deg] 다운포스가 커지는 방향 +. 메인 앞전을 중심으로 날개를 회전 (받음각별 메쉬)
+speed_kmh = [40, 60, 80, 100]    # 주행 속도 [km/h]
+
+# ---------------------------------------------------------------- 2단: 메인 + 플랩 1개
+[[cases.set]]
+label = "2el"
+name = "2el_{main_airfoil}c{main_chord}_f{flap1_chord}d{flap1_deflection}g{flap1_gap}_h{ground_clearance}_v{speed_kmh}_a{aoa}"
+
+[cases.set.constants]
+base_case = "base_2el.cas.h5"    # 경계 main, flap1, ground, inlet, outlet, top 으로 만든 베이스 케이스
+flap1_airfoil = "4412"
+flap1_overlap = 5                # [mm] 메인 뒷전 x - 플랩 앞쪽 끝 x
+
+[cases.set.sweep]
+flap1_chord = [80, 115, 150]     # [mm]
+flap1_deflection = [20, 30]      # [deg] 메인 코드선 기준, 뒷전 아래 방향 +
+flap1_gap = [6, 10]              # [mm] 메인 뒷전 ~ 플랩 표면 최소 거리
+
+# ---------------------------------------------------------------- 3단: 메인 + 플랩 2개
+[[cases.set]]
+label = "3el"
+name = "3el_{main_airfoil}c{main_chord}_f{flap1_chord}d{flap1_deflection}_f{flap2_chord}d{flap2_deflection}g{flap2_gap}_h{ground_clearance}_v{speed_kmh}_a{aoa}"
+
+[cases.set.constants]
+base_case = "base_3el.cas.h5"    # 경계 main, flap1, flap2, ground, inlet, outlet, top 으로 만든 베이스 케이스
+flap1_airfoil = "4412"
+flap1_gap = 6                    # [mm]
+flap1_overlap = 5                # [mm]
+flap2_airfoil = "4412"
+flap2_overlap = 3                # [mm] 플랩1 뒷전 x - 플랩2 앞쪽 끝 x
+
+[cases.set.sweep]
+flap1_chord = [80, 150]          # [mm]
+flap1_deflection = [15, 25]      # [deg] 메인 코드선 기준 절대각
+flap2_chord = [80, 150]          # [mm]
+flap2_deflection = [35, 45]      # [deg] 메인 코드선 기준 절대각
+flap2_gap = [5, 8]               # [mm] 플랩1 뒷전 ~ 플랩2 표면 최소 거리
+
+# ---------------------------------------------------------------- 유동 조건
+[derived]                    # Fluent 기본 공기 물성 (15°C, 1 atm): ρ=1.225, μ=1.7894e-5, 음속 340.29 m/s
+chord = "main_chord / 1000"                           # 메인 코드 [m]: 메쉬 스케일, Re, 계수 기준 길이
+velocity = "speed_kmh / 3.6"                          # [m/s]
+mach = "velocity / 340.29"
+reynolds = "1.225 * velocity * chord / 1.7894e-5"    # 메인 코드 기준
+
+[mesh]                       # gmsh 자동 메쉬 (전체 항목은 README 참고)
+# chord, reynolds 는 케이스 변수에서 자동으로 가져옴
+# (형상·지상고·받음각이 같으면 속도와 무관하게 메쉬 공유, 첫 셀 높이는 최고 Re 기준 → 모든 속도에서 y+ ≤ 1)
+y_plus = 1.0
+growth_rate = 1.15
+surface_cells = 200          # 메인 윗면/아랫면 각각
+flap_surface_cells = 150     # 플랩마다 윗면/아랫면 각각
+ground_upstream = 5          # 메인 앞전 ~ inlet [메인 코드]
+ground_downstream = 12       # 메인 앞전 ~ outlet [메인 코드]
+ground_height = 6            # 지면 ~ 위쪽 경계 [메인 코드]
+
+[screening]                  # CFD 전 저충실도 선별 (aero-auto screen), 속도별로 따로 선별
+transition = "free"          # Re 수십만은 천이 영향이 커서 자연 천이로 추정 (Fluent는 Transition SST 권장)
+protect = ["*gap", "*overlap", "main_chord", "chord", "ground_clearance"]
+                             # 이 변수 값만으로는 제외하지 않음
+                             #  gap/overlap: 슬롯 유동은 저충실도 예측이 부정확
+                             #  main_chord: 길수록 Re가 커져 L/D가 항상 유리 → 크기 득실은 사람이 판단
+                             #  ground_clearance: 낮을수록 비점성 해석이 다운포스를 과대평가 → CFD로 확인
+aoa_step = 2.0               # 실속각 탐색 간격 [deg] (지면 모드는 받음각마다 형상을 다시 풀어서 간격을 넓힘)
+keep_top = 3                 # 점수 상위 3개 계열은 항상 유지
+keep_within = 0.05           # 최고 계열 대비 5% 이내면 유지
+spot_check = 1               # 제외된 계열 중 최상위 1개는 대표 케이스만 CFD로 검증
+aoa_margin = 2.0             # 추정 실속각 + 2° 까지 해석 (넘는 첫 받음각 1개는 유지)
+prune_aoa = false            # 받음각 선별 끔: 지면 모드에서는 비점성 해석이 지면 근처 흡입을 과대평가해
+                             # 실속각을 너무 낮게(2~4°) 추정함 → 받음각은 CFD 결과로 판단
+
+[results]
+report_files = ["*.out"]
+average_last = 100           # 마지막 100 iteration 평균
+x_param = "aoa"
+wind_axes = true             # cx, cy 리포트 → cl, cd 자동 변환 (요소별 cx-flap1 등도)
+objective = "max_cl"         # 형상 순위: max_cl (최대 다운포스, 현재) 또는 max_ld (다운포스/항력 효율)
+split_by = ["speed_kmh"]     # 속도별로 순위·그래프·스크리닝 선별을 따로 수행
