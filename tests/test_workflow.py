@@ -116,3 +116,11 @@ def test_timeout_marks_failed(tmp_path):
     cfg = load_config(cfg_path)
     status = json.loads((build_cases(cfg)[0].dir / "status.json").read_text())
     assert status["state"] == "failed" and "시간 초과" in status["message"]
+
+
+def test_missing_config_suggests_subfolder(tmp_path):
+    sub = tmp_path / "examples" / "demo"
+    sub.mkdir(parents=True)
+    (sub / "project.toml").write_text("")
+    with pytest.raises(ConfigError, match="examples"):
+        load_config(tmp_path / "project.toml")

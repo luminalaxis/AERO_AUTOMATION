@@ -75,10 +75,24 @@ class ProjectConfig:
         return self.path.parent
 
 
+def _suggest_configs(folder: Path, limit: int = 5) -> str:
+    """현재 폴더 아래(3단계까지)에 있는 project.toml을 찾아 실행 방법을 안내한다."""
+    found = []
+    for depth in ("*/project.toml", "*/*/project.toml", "*/*/*/project.toml"):
+        found += [f for f in folder.glob(depth) if "runs" not in f.parts]
+    if not found:
+        return ""
+    lines = ["", "하위 폴더에 설정 파일이 있습니다. 그 폴더로 이동해서 실행하거나 -c 로 지정하세요:"]
+    for f in found[:limit]:
+        rel = f.parent.relative_to(folder)
+        lines.append(f"  cd {rel}    (또는 aero-auto -c {f.relative_to(folder)} ...)")
+    return "\n".join(lines)
+
+
 def load_config(path: str | Path) -> ProjectConfig:
     path = Path(path).resolve()
     if not path.is_file():
-        raise ConfigError(f"설정 파일을 찾을 수 없습니다: {path}")
+        raise ConfigError(f"설정 파일을 찾을 수 없습니다: {path}" + _suggest_configs(path.parent))
     with path.open("rb") as f:
         data = tomllib.load(f)
 
