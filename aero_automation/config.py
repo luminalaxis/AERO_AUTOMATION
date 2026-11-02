@@ -43,6 +43,7 @@ class SolverConfig:
 class ResultsConfig:
     report_files: list[str] = field(default_factory=lambda: ["*.out"])
     average_last: int = 1  # 마지막 N개 반복의 평균을 결과값으로 사용
+    average_last_oscillating: int | None = None  # 진동(oscillating) 판정 케이스만 마지막 N개 평균 (비우면 average_last)
     error_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_ERROR_PATTERNS))
     summary_file: str = "summary.csv"
     x_param: str = "aoa"  # 그래프 x축 / 받음각 변수 이름

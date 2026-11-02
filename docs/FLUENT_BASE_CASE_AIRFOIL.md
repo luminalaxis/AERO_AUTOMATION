@@ -107,10 +107,17 @@ Density **constant 1.225**, Viscosity **constant 1.7894e-05** (마하수 0.03~0.
 
 이름은 정확히 `cx`, `cy`여야 합니다. 도구가 받음각 α로 `cl = cy·cosα − cx·sinα`, `cd = cx·cosα + cy·sinα`를 계산하므로 받음각마다 힘 방향을 바꿀 필요가 없습니다.
 
-`Solution > Monitors > Report Files > New...`
-- Name **`coef-rfile`**, 위 2개 리포트 추가, File Name `coef-rfile.out`, Get Data Every 1 Iteration
+기획서의 라벨 규칙대로 케이스마다 y+도 기록합니다. `Solution > Report Definitions > New > Surface Report`
 
-이 파일의 반복별 이력으로 수렴 상태(converged / oscillating / diverged)를 판정합니다.
+| Name | 종류 | Field Variable | Surfaces |
+|---|---|---|---|
+| `yplus-max` | Facet Maximum | Turbulence... → Wall Yplus | main |
+| `yplus-avg` | Area-Weighted Average | Turbulence... → Wall Yplus | main |
+
+`Solution > Monitors > Report Files > New...`
+- Name **`coef-rfile`**, 위 4개 리포트(`cx`, `cy`, `yplus-max`, `yplus-avg`) 추가, File Name `coef-rfile.out`, Get Data Every 1 Iteration
+
+이 파일의 반복별 이력으로 수렴 상태(converged / oscillating / diverged)를 판정하고, 결과값(수렴: 마지막 200회 평균, 진동: 마지막 500회 평균)과 y+(`summary.csv`의 `yplus-max`, `yplus-avg`)를 기록합니다.
 
 ## 10. 동작 확인 (권장)
 
@@ -134,7 +141,7 @@ aero-auto collect --only "naca0012*"
 
 확인할 것
 - `runs\naca0012\naca0012_Re200000_a4\solver.log`에 Error가 없는지
-- `runs\summary.csv`의 해당 행: `cl` ≈ 0.42~0.46, `cd` ≈ 0.011~0.015 (완전 난류 SST, Re 2×10⁵), `conv_state`
+- `runs\summary.csv`의 해당 행: `cl` ≈ 0.42~0.46, `cd` ≈ 0.011~0.015 (완전 난류 SST, Re 2×10⁵), `conv_state`, `yplus-max`(첫 셀 높이 기준값 1을 크게 넘지 않는지, 예: 5 이하)
 - `convergence.png` 제목에 수렴 상태가 표시됨
 - 케이스당 소요 시간 (`aero-auto status`) → 3,360 케이스 전체 일정 계산
 
@@ -159,8 +166,17 @@ aero-auto collect --only "naca0012*"
    base_case = "base_airfoil_tsst.cas.h5"
    turbulence_model = "transition-sst"
    ```
-3. 비교할 경계 사례만 실행
+3. Re 2×10⁵ 케이스 일부만 실행합니다. 신뢰성 검증용 NACA 0012와, 경계 사례로 쓸 평가(test)·처음 보는 형상(test_ood) 몇 개(예: 3~5개)를 받음각 전체로 돌리는 것을 권장합니다. 형상별 분할은 `runs/dataset/split.json`에서 확인합니다.
    ```bash
-   aero-auto -c project_tsst.toml run --all --only "naca2412_Re200000_a1[0-6]"
+   aero-auto -c project_tsst.toml run --all --only "naca0012_Re200000_*" "s1223_Re200000_*" "e423_Re200000_*"
    ```
-4. 같은 이름의 케이스를 `runs/summary.csv`와 `runs_tsst/summary.csv`에서 비교합니다. Re 2×10⁵에서는 층류 박리 기포 때문에 두 모델의 CD 차이가 크게 날 수 있습니다.
+4. 본 프로젝트(`project.toml`)의 `[ml]`에 결과 위치를 적고 데이터셋을 다시 만듭니다.
+   ```toml
+   [ml]
+   tsst_summary = "runs_tsst/summary.csv"
+   ```
+   ```bash
+   aero-auto dataset
+   ```
+   이름이 같은 케이스끼리 짝지어 `dataset.csv`에 `cl_tsst`, `log10_cd_tsst`, `d_cl_tsst`, `d_log10_cd_tsst`(T-SST − SST)가 붙고, Re별 차이(중앙값, 최대와 그 케이스)가 출력됩니다. Re 2×10⁵에서는 층류 박리 기포 때문에 두 모델의 CD 차이가 크게 날 수 있습니다.
+5. `aero-auto train` → `aero-auto edge-cases`를 다시 실행하면 경계 사례에 "난류 모델에 따라 정답이 크게 달라지는 케이스" 2개가 들어갑니다(평가 분할 형상만 해당). Transition SST 정답은 학습에 쓰지 않습니다.

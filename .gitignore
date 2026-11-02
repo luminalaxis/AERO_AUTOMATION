@@ -219,5 +219,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# 해석 결과 폴더
+# 해석 결과 폴더 (runs_tsst/: Transition SST 비교, runs_mesh/: 메시 독립성 확인 등)
 runs/
+runs_*/
