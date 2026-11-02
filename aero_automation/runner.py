@@ -55,23 +55,24 @@ def case_variables(cfg: ProjectConfig, case: Case) -> dict:
 
 def ensure_meshes(cfg: ProjectConfig, cases: list[Case], force: bool = False) -> dict[str, str]:
     """케이스에 필요한 메쉬를 생성한다 (같은 형상은 한 번만). 반환: {메쉬 이름: 오류 메시지}."""
-    from .meshing import generate_mesh
+    from .meshing import MeshWorker, generate_mesh
 
     jobs = {c.mesh.name: c.mesh for c in cases if c.mesh is not None}
     todo = [j for j in jobs.values() if force or not j.is_current()]
     if jobs:
         log(f"메쉬: 형상 {len(jobs)}개 중 {len(todo)}개 생성 필요")
     errors = {}
-    for i, job in enumerate(todo, start=1):
-        start = time.monotonic()
-        try:
-            info = generate_mesh(job, cfg.root)
-        except ConfigError as exc:
-            errors[job.name] = str(exc)
-            log(f"  [{i}/{len(todo)}] {job.name:<45} 실패 - {exc}")
-            continue
-        log(f"  [{i}/{len(todo)}] {job.name:<45} {info['cells']:>8,} cells  "
-            f"품질 {info['min_quality']:.2f}  {time.monotonic() - start:4.1f}s")
+    with MeshWorker() as worker:
+        for i, job in enumerate(todo, start=1):
+            start = time.monotonic()
+            try:
+                info = generate_mesh(job, cfg.root, worker=worker)
+            except ConfigError as exc:
+                errors[job.name] = str(exc)
+                log(f"  [{i}/{len(todo)}] {job.name:<45} 실패 - {exc}")
+                continue
+            log(f"  [{i}/{len(todo)}] {job.name:<45} {info['cells']:>8,} cells  "
+                f"품질 {info['min_quality']:.2f}  {time.monotonic() - start:4.1f}s")
     return errors
 
 

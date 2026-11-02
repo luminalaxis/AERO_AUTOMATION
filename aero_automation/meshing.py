@@ -40,12 +40,15 @@ class MeshSettings:
     wake_angles: list = None      # 뒷전에서 뻗는 후류선 각도 [deg] (받음각 범위를 덮도록)
     farfield_radius: float = 50.0 # 원거리 경계 반지름 [c]
     farfield_size: float = 5.0    # 원거리 경계 셀 크기 [c]
+    farfield_split: bool = False  # true면 원거리 경계를 앞쪽 반원 inlet(velocity-inlet) +
+                                  # 뒤쪽 반원 outlet(pressure-outlet)으로 나눔 (밀도 일정 비압축 해석용)
     # 지면이 있을 때 (케이스 변수 ground_clearance): 직사각형 영역
     ground_upstream: float = 5.0     # 메인 앞전 ~ inlet 거리 [c]
     ground_downstream: float = 12.0  # 메인 앞전 ~ outlet 거리 [c]
     ground_height: float = 6.0       # 지면 ~ 위쪽 경계(symmetry) 높이 [c]
     ground_far_size: float = 0.5     # inlet/outlet/top 근처 셀 크기 [c]
     min_quality: float = 0.05     # 허용 최소 셀 품질 (0~1, 삼각형 SICN / 사각형 SJ)
+    timeout: float = 300.0        # 형상 하나의 메쉬 생성 제한 시간 [s]. 넘으면 그 형상만 실패 처리 (0 = 제한 없음)
 
     @classmethod
     def from_dict(cls, data: dict) -> "MeshSettings":
@@ -64,6 +67,10 @@ class MeshSettings:
         return self.y_plus * math.sqrt(2 / cf) / self.reynolds
 
 
+_NOT_IN_FINGERPRINT = ("timeout",)          # 메쉬 결과에 영향 없는 항목
+_ADDED_DEFAULTS = {"farfield_split": False}  # 나중에 추가된 항목과 그 기본값
+
+
 @dataclass
 class MeshJob:
     name: str
@@ -76,7 +83,14 @@ class MeshJob:
         return self.dir / MESH_FILE
 
     def fingerprint(self) -> str:
-        payload = json.dumps([self.geometry_params, asdict(self.settings)], sort_keys=True, default=str)
+        settings = asdict(self.settings)
+        for key in _NOT_IN_FINGERPRINT:
+            settings.pop(key, None)
+        # 나중에 추가된 항목은 기본값이면 빼서, 기존 메쉬가 불필요하게 다시 만들어지지 않게 한다
+        for key, default in _ADDED_DEFAULTS.items():
+            if settings.get(key) == default:
+                settings.pop(key)
+        payload = json.dumps([self.geometry_params, settings], sort_keys=True, default=str)
         return hashlib.sha1(payload.encode()).hexdigest()[:12]
 
     def is_current(self) -> bool:
@@ -173,7 +187,12 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
                 for a in (0, math.pi / 2, math.pi, 3 * math.pi / 2)]
         arcs = [geo.addCircleArc(ring[i], center, ring[(i + 1) % 4]) for i in range(4)]
         outer_loop = geo.addCurveLoop(arcs)
-        outer = {"farfield": (arcs, "pressure-far-field")}
+        if s.farfield_split:
+            # arcs: 0 = 뒤-위, 1 = 앞-위, 2 = 앞-아래, 3 = 뒤-아래 (반시계)
+            outer = {"inlet": ([arcs[1], arcs[2]], "velocity-inlet"),
+                     "outlet": ([arcs[3], arcs[0]], "pressure-outlet")}
+        else:
+            outer = {"farfield": (arcs, "pressure-far-field")}
     else:
         # 지면 효과: 직사각형 영역. 아래 = 지면(wall, Fluent에서 moving wall), 앞 = inlet, 뒤 = outlet, 위 = symmetry
         far_size = s.ground_far_size
@@ -330,14 +349,65 @@ def _extract(walls: dict, outer: dict) -> tuple[np.ndarray, list, list[Boundary]
     return nodes_xy, cells, boundaries, q_min
 
 
-def generate_mesh(job: MeshJob, root: Path, plots: bool = True) -> dict:
-    """메쉬 생성 → mesh.msh, mesh_info.json, 이미지 저장. 실패 시 ConfigError."""
+class MeshWorker:
+    """메쉬 생성을 별도 프로세스에서 실행한다 (gmsh가 멈추는 형상이 있어도 시간 제한 후 그 형상만 실패).
+
+    프로세스 하나를 여러 형상에 재사용하고, 시간 초과가 나면 그 프로세스를 끝내고 새로 띄운다.
+    """
+
+    def __init__(self):
+        self._pool = None
+
+    def __enter__(self) -> "MeshWorker":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def _get_pool(self):
+        if self._pool is None:
+            import multiprocessing as mp
+            self._pool = mp.get_context("spawn").Pool(1)
+        return self._pool
+
+    def close(self, kill: bool = False) -> None:
+        if self._pool is not None:
+            if kill:
+                self._pool.terminate()
+            else:
+                self._pool.close()
+            self._pool.join()
+            self._pool = None
+
+    def run(self, job: MeshJob, root: Path, plots: bool) -> dict:
+        import multiprocessing as mp
+
+        result = self._get_pool().apply_async(_generate, (job, root, plots))
+        try:
+            return result.get(timeout=job.settings.timeout)
+        except mp.TimeoutError:
+            self.close(kill=True)
+            raise ConfigError(f"메쉬 생성 시간 초과 ({job.settings.timeout:g}초, {job.name}). "
+                              "형상 좌표(뒷전이 겹치거나 꼬인 곳)를 확인하세요.") from None
+
+
+def generate_mesh(job: MeshJob, root: Path, plots: bool = True, worker: MeshWorker | None = None) -> dict:
+    """메쉬 생성 → mesh.msh, mesh_info.json, 이미지 저장. 실패 시 ConfigError.
+
+    settings.timeout > 0 이면 별도 프로세스에서 시간 제한을 두고 실행한다 (worker를 주면 재사용).
+    """
     job.dir.mkdir(parents=True, exist_ok=True)
     # 재생성이 실패했을 때 이전 설정의 메쉬가 쓰이지 않도록 먼저 지운다
     for name in (MESH_FILE, INFO_FILE, ERROR_FILE):
         (job.dir / name).unlink(missing_ok=True)
     try:
-        info = _generate(job, root, plots)
+        if not job.settings.timeout or job.settings.timeout <= 0:
+            info = _generate(job, root, plots)
+        elif worker is not None:
+            info = worker.run(job, root, plots)
+        else:
+            with MeshWorker() as w:
+                info = w.run(job, root, plots)
     except ConfigError as exc:
         (job.dir / ERROR_FILE).write_text(str(exc), encoding="utf-8")
         raise
