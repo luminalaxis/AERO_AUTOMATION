@@ -50,6 +50,18 @@ def test_ground_mesh_boundaries(tmp_path):
     assert set(info["zones"]) == {"interior-fluid", "main", "flap1", "ground", "inlet", "outlet", "top"}
     check = check_msh(job.mesh_file)
     assert check["bad_cells"] == 0 and check["open_cells"] == 0
+    # 미리보기용 gmsh 파일: gmsh로 다시 열리고 Fluent 파일과 같은 m 단위
+    import gmsh
+    from aero_automation.meshing import GMSH_FILE
+    gmsh.initialize()
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.open(str(job.dir / GMSH_FILE))
+        _, coords, _ = gmsh.model.mesh.getNodes()
+        xmax = coords.reshape(-1, 3)[:, 0].max()
+    finally:
+        gmsh.finalize()
+    assert xmax == pytest.approx(4 * 0.375, rel=0.02)  # ground_downstream = 4 c
     bc_of = {name: bc for bc, name in check["names"].values()}
     assert bc_of["ground"] == "wall"
     assert bc_of["inlet"] == "velocity-inlet"

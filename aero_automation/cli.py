@@ -139,6 +139,40 @@ def cmd_run(args) -> int:
     return 1 if counts.get("failed") else 0
 
 
+def cmd_view(args) -> int:
+    """메쉬를 gmsh 창으로 열어 확대·이동하며 확인 (없으면 먼저 생성)."""
+    from .meshing import GMSH_FILE
+
+    cfg, cases = _load(args)
+    if cfg.mesh is None:
+        raise ConfigError("project.toml에 [mesh] 섹션이 없습니다.")
+    case = cases[0]
+    if len({c.mesh.name for c in cases}) > 1:
+        print(f"조건에 맞는 메쉬가 여러 개라 첫 번째 케이스({case.name})의 메쉬를 엽니다.")
+    path = case.mesh.dir / GMSH_FILE
+    if not path.is_file():
+        # 미리보기 파일이 없으면(이 기능 이전에 만든 메쉬 포함) 메쉬를 다시 생성
+        ensure_meshes(cfg, [case], force=True)
+    if not path.is_file():
+        raise ConfigError(f"메쉬 파일을 만들지 못했습니다: {case.mesh.dir}")
+    print(f"gmsh로 엽니다: {path}\n(창을 닫으면 끝납니다. 마우스 휠: 확대, 왼쪽 드래그: 회전, 오른쪽 드래그: 이동)")
+    import gmsh
+
+    gmsh.initialize()
+    try:
+        gmsh.open(str(path))
+        gmsh.option.setNumber("Mesh.SurfaceFaces", 0)
+        gmsh.option.setNumber("Mesh.SurfaceEdges", 1)
+        gmsh.option.setNumber("General.Trackball", 0)
+        gmsh.option.setNumber("General.RotationX", 0)
+        gmsh.option.setNumber("General.RotationY", 0)
+        gmsh.option.setNumber("General.RotationZ", 0)
+        gmsh.fltk.run()
+    finally:
+        gmsh.finalize()
+    return 0
+
+
 def cmd_mesh(args) -> int:
     cfg, cases = _load(args)
     if cfg.mesh is None:
@@ -198,6 +232,7 @@ def main(argv=None) -> int:
     p = add("plan", cmd_plan, "케이스 목록 확인 및 폴더/저널 생성")
     p.add_argument("--dry-run", action="store_true", help="목록만 출력하고 파일은 만들지 않음")
     add("screen", cmd_screen, "저충실도 해석 + 민감도 그래프 + 케이스 선별")
+    add("view", cmd_view, "메쉬를 gmsh 창으로 미리보기 (--only 로 케이스 지정)")
     p = add("mesh", cmd_mesh, "형상별 메쉬 생성 (이미 있으면 건너뜀)")
     p.add_argument("--all", action="store_true", help="스크리닝 결과 무시하고 전체 형상 메쉬 생성")
     p.add_argument("--force", action="store_true", help="기존 메쉬도 다시 생성")

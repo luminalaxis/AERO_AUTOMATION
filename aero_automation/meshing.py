@@ -20,6 +20,7 @@ from .geometry import Geometry, build_geometry, geometry_params, n_flaps
 MESH_FILE = "mesh.msh"
 INFO_FILE = "mesh_info.json"
 ERROR_FILE = "mesh_error.txt"
+GMSH_FILE = "mesh_gmsh.msh"  # 미리보기용 gmsh 형식 (mesh.msh는 Fluent 형식이라 gmsh로 안 열림)
 
 
 @dataclass
@@ -334,7 +335,7 @@ def generate_mesh(job: MeshJob, root: Path, plots: bool = True) -> dict:
     """메쉬 생성 → mesh.msh, mesh_info.json, 이미지 저장. 실패 시 ConfigError."""
     job.dir.mkdir(parents=True, exist_ok=True)
     # 재생성이 실패했을 때 이전 설정의 메쉬가 쓰이지 않도록 먼저 지운다
-    for name in (MESH_FILE, INFO_FILE, ERROR_FILE):
+    for name in (MESH_FILE, INFO_FILE, ERROR_FILE, GMSH_FILE):
         (job.dir / name).unlink(missing_ok=True)
     try:
         info = _generate(job, root, plots)
@@ -367,6 +368,11 @@ def _generate(job: MeshJob, root: Path, plots: bool) -> dict:
             walls, outer = _build_gmsh_model(geom, s, bl_thickness)
             gmsh.model.mesh.generate(2)
             nodes, cells, boundaries, q_min = _extract(walls, outer)
+            if q_min >= s.min_quality:
+                # 미리보기용 gmsh 파일 (Fluent 파일과 같은 m 단위로 스케일)
+                c = s.chord
+                gmsh.model.mesh.affineTransform([c, 0, 0, 0, 0, c, 0, 0, 0, 0, c, 0])
+                gmsh.write(str(job.dir / GMSH_FILE))
         except Exception as exc:  # gmsh 내부 오류
             errors.append(f"시도 {attempt}: {exc}")
             continue
