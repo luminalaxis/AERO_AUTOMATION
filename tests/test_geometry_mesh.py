@@ -170,3 +170,22 @@ def test_mesh_failure_marks_cases_failed(tmp_path):
     status = json.loads((build_cases(cfg)[0].dir / "status.json").read_text(encoding="utf-8"))
     assert status["state"] == "failed" and "메쉬 실패" in status["message"]
     assert "gap" in status["message"]  # 실제 실패 사유가 남아야 함
+
+
+def test_section_refine_independent_of_source_points():
+    """좌표 파일의 점 개수(61~201)와 상관없이 같은 형상·같은 스크리닝 결과가 나와야 한다."""
+    from aero_automation.geometry import Element, Geometry, refine
+    from aero_automation.panel import analyze, solve_inviscid
+
+    fine = naca4("4412", n=3000)
+    results = []
+    for n in (31, 43, 101):
+        xy, le = refine(*normalize(naca4("4412", n=n)))
+        assert len(xy) == 301 and xy[le] == pytest.approx([0, 0], abs=1e-12)
+        from aero_automation.geometry import _point_segments_distance
+        assert _point_segments_distance(xy, fine).max() < 5e-5  # 시위의 0.005% 이내
+        p = analyze(solve_inviscid(Geometry([Element("m", xy, le)], {}), 60), 4, 5e5, transition="free")
+        results.append((p.cl, p.cd))
+    cls, cds = zip(*results)
+    assert max(cls) - min(cls) < 0.003
+    assert max(cds) / min(cds) < 1.02

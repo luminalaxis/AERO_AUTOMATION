@@ -109,9 +109,18 @@ def read_airfoil_file(path: Path) -> np.ndarray:
 
 
 def normalize(xy: np.ndarray) -> tuple[np.ndarray, int]:
-    """앞전을 원점, 시위를 1, 시위선을 x축에 맞춘다. (좌표, 앞전 인덱스) 반환."""
+    """앞전을 원점, 시위를 1, 시위선을 x축에 맞춘다. (좌표, 앞전 인덱스) 반환.
+
+    좌표가 이미 표준 정규화(앞전 점 (0,0), 뒷전 중점 (1,0))돼 있으면 그 시위선 정의를 그대로 쓴다
+    (UIUC 파일, NACA 생성기). 캠버 익형은 '뒷전에서 가장 먼 점'이 (0,0) 옆 점이 되기도 해서,
+    그 점으로 다시 맞추면 시위선이 조금 돌아가 받음각이 점 개수에 따라 달라진다.
+    """
     te = 0.5 * (xy[0] + xy[-1])
-    le_idx = int(np.argmax(np.linalg.norm(xy - te, axis=1)))
+    origin = int(np.argmin(np.linalg.norm(xy, axis=1)))
+    if np.linalg.norm(xy[origin]) < 1e-6 and np.linalg.norm(te - (1.0, 0.0)) < 2e-3:
+        le_idx = origin
+    else:
+        le_idx = int(np.argmax(np.linalg.norm(xy - te, axis=1)))
     le = xy[le_idx]
     chord_vec = te - le
     chord = np.linalg.norm(chord_vec)
@@ -130,6 +139,39 @@ def normalize(xy: np.ndarray) -> tuple[np.ndarray, int]:
     return out[keep], le_idx
 
 
+def _natural_cubic(s: np.ndarray, y: np.ndarray, s_new: np.ndarray) -> np.ndarray:
+    """자연 3차 스플라인 보간 (scipy 없이). s는 증가 수열."""
+    n = len(s)
+    h = np.diff(s)
+    A = np.zeros((n, n))
+    rhs = np.zeros(n)
+    A[0, 0] = A[-1, -1] = 1.0
+    for i in range(1, n - 1):
+        A[i, i - 1], A[i, i], A[i, i + 1] = h[i - 1], 2 * (h[i - 1] + h[i]), h[i]
+        rhs[i] = 6 * ((y[i + 1] - y[i]) / h[i] - (y[i] - y[i - 1]) / h[i - 1])
+    m = np.linalg.solve(A, rhs)
+    k = np.clip(np.searchsorted(s, s_new) - 1, 0, n - 2)
+    t0, t1, hk = s_new - s[k], s[k + 1] - s_new, h[k]
+    return (m[k] * t1**3 + m[k + 1] * t0**3) / (6 * hk) + (y[k] / hk - m[k] * hk / 6) * t1 \
+        + (y[k + 1] / hk - m[k + 1] * hk / 6) * t0
+
+
+def refine(xy: np.ndarray, le: int, n_side: int = 150) -> tuple[np.ndarray, int]:
+    """단면 좌표를 매끄러운 3차 스플라인으로 면당 n_side개(앞전·뒷전 집중)로 다시 분포.
+
+    좌표 파일의 점 개수·간격(보통 60~100점)과 상관없이 모든 익형을 같은 품질로 다루기 위함.
+    앞전을 곡선 내부에 두고 전체 윤곽을 한 번에 보간해 앞전 곡률이 매끄럽게 유지된다.
+    """
+    s = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))])
+    keep = np.concatenate([[True], np.diff(s) > 1e-12])
+    xy, s, le = xy[keep], s[keep], int(keep[: le + 1].sum()) - 1
+    t = 0.5 * (1 - np.cos(np.linspace(0, np.pi, n_side + 1)))
+    s_new = np.concatenate([s[le] * t, s[le] + (s[-1] - s[le]) * t[1:]])
+    out = np.column_stack([_natural_cubic(s, xy[:, 0], s_new), _natural_cubic(s, xy[:, 1], s_new)])
+    out[0], out[n_side], out[-1] = xy[0], xy[le], xy[-1]  # 뒷전·앞전 점은 원본 그대로
+    return out, n_side
+
+
 def load_section(spec, root: Path, name: str) -> Element:
     """NACA 4자리는 수식으로 생성, 그 외는 좌표 파일 (경로, airfoils/<이름>.dat, 없으면 UIUC에서 자동 다운로드)."""
     spec = str(spec).strip()
@@ -139,7 +181,7 @@ def load_section(spec, root: Path, name: str) -> Element:
     else:
         from .airfoils import resolve
         xy = read_airfoil_file(resolve(spec, root).resolve())
-    xy, le_idx = normalize(xy)
+    xy, le_idx = refine(*normalize(xy))
     return Element(name, xy, le_idx)
 
 

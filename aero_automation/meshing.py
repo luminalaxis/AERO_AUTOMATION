@@ -20,6 +20,8 @@ from .geometry import Geometry, build_geometry, geometry_params, n_flaps
 MESH_FILE = "mesh.msh"
 INFO_FILE = "mesh_info.json"
 ERROR_FILE = "mesh_error.txt"
+# 형상 생성 방식이 바뀌면 올린다 → 이전 버전으로 만든 메쉬는 자동으로 다시 생성됨
+GEOMETRY_VERSION = 2  # 2: 익형 3차 스플라인 재분포, 표준 정규화 좌표의 시위선 유지
 GMSH_FILE = "mesh_gmsh.msh"  # 미리보기용 gmsh 형식 (mesh.msh는 Fluent 형식이라 gmsh로 안 열림)
 
 
@@ -77,7 +79,8 @@ class MeshJob:
         return self.dir / MESH_FILE
 
     def fingerprint(self) -> str:
-        payload = json.dumps([self.geometry_params, asdict(self.settings)], sort_keys=True, default=str)
+        payload = json.dumps([GEOMETRY_VERSION, self.geometry_params, asdict(self.settings)],
+                             sort_keys=True, default=str)
         return hashlib.sha1(payload.encode()).hexdigest()[:12]
 
     def is_current(self) -> bool:
