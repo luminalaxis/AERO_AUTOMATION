@@ -123,7 +123,7 @@ def test_airfoil_dataset_example_config():
     assert len(cases) == 120 * 14 * 2
     assert len({c.mesh.name for c in cases}) == 120          # 형상당 메쉬 1개 (받음각·Re 공유)
     assert all(c.mesh.settings.reynolds == 500000 for c in cases)  # 첫 셀 높이는 큰 Re 기준
-    assert all(c.mesh.settings.farfield_split for c in cases)
+    assert all(c.mesh.settings.farfield_shape == "box" for c in cases)
     c = next(c for c in cases if c.name == "naca2412_Re200000_a4")
     assert str(c.params["main_airfoil"]) == "2412" and c.params["flow_angle"] == 4
     assert c.params["velocity"] == pytest.approx(200000 * 1.7894e-5 / (1.225 * 0.3))
@@ -148,6 +148,35 @@ def test_split_farfield_mesh(tmp_path):
                     "farfield_radius": 20}, tmp_path)
     info = generate_mesh(job, tmp_path, plots=False)
     assert set(info["zones"]) == {"interior-fluid", "main", "inlet", "outlet"}
+
+
+def test_box_enclosure_mesh(tmp_path):
+    from aero_automation.fluent_msh import check_msh, read_msh
+    from aero_automation.meshing import make_job, generate_mesh
+
+    job = make_job({"main_airfoil": "2412", "chord": 0.3, "reynolds": 5e5},
+                   {"farfield_shape": "box", "box_upstream": 10, "box_downstream": 20, "box_height": 8,
+                    "box_far_size": 1.0, "surface_cells": 80, "near_size": 0.03, "wake_size": 0.03}, tmp_path)
+    info = generate_mesh(job, tmp_path)
+    assert set(info["zones"]) == {"interior-fluid", "main", "inlet", "outlet"}
+    check = check_msh(job.mesh_file)
+    assert not check["bad_cells"] and not check["open_cells"]
+    # 직사각형 영역: x −10c ~ 20c, y ±8c (코드 0.3 m → m 단위)
+    nodes = read_msh(job.mesh_file)["nodes"]
+    np.testing.assert_allclose(nodes.min(0), [-10 * 0.3, -8 * 0.3], atol=1e-9)
+    np.testing.assert_allclose(nodes.max(0), [20 * 0.3, 8 * 0.3], atol=1e-9)
+    assert (job.dir / "mesh_domain.png").is_file()
+    assert info["settings"]["farfield_shape"] == "box"
+
+
+def test_box_settings_validated(tmp_path):
+    from aero_automation.config import ConfigError
+    from aero_automation.meshing import make_job
+
+    with pytest.raises(ConfigError, match="farfield_shape"):
+        make_job({"main_airfoil": "0012"}, {"farfield_shape": "square"}, tmp_path)
+    with pytest.raises(ConfigError, match="box_"):
+        make_job({"main_airfoil": "0012"}, {"farfield_shape": "box", "box_height": 0}, tmp_path)
 
 
 # ---------------------------------------------------------------- 전체 흐름
@@ -265,10 +294,12 @@ FLAP_PARAMS = {"main_airfoil": "2412", "flap1_airfoil": "4412", "flap1_chord": 0
 def test_mesh_fingerprint_unchanged_by_new_settings(tmp_path):
     from aero_automation.meshing import make_job
 
-    # 새 항목(farfield_split, timeout) 추가 전과 같은 값 → 기존 메쉬를 다시 만들지 않음
+    # 새 항목(farfield_split, farfield_shape, box_*, timeout) 추가 전과 같은 값 → 기존 메쉬를 다시 만들지 않음
     assert make_job(FLAP_PARAMS, {}, tmp_path).fingerprint() == "28eb3c2799f1"
     assert make_job(FLAP_PARAMS, {"timeout": 10}, tmp_path).fingerprint() == "28eb3c2799f1"
+    assert make_job(FLAP_PARAMS, {"farfield_shape": "circle", "box_height": 20}, tmp_path).fingerprint() == "28eb3c2799f1"
     assert make_job(FLAP_PARAMS, {"farfield_split": True}, tmp_path).fingerprint() != "28eb3c2799f1"
+    assert make_job(FLAP_PARAMS, {"farfield_shape": "box"}, tmp_path).fingerprint() != "28eb3c2799f1"
 
 
 def test_cusp_trailing_edge_is_opened(tmp_path):

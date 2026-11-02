@@ -17,7 +17,7 @@ aero-auto mesh --only "naca0012*"
 ```
 
 `runs/_meshes/0012_c0.3/mesh.msh`가 생깁니다 (NACA 0012, 코드 0.3 m, 약 5만 셀, 첫 셀 높이는 Re 5×10⁵에서 y+ ≈ 1).
-`geometry.png`, `mesh.png`, `mesh_le.png`로 형상과 경계층을 먼저 확인하세요.
+`geometry.png`, `mesh.png`, `mesh_le.png`로 형상과 경계층을, `mesh_domain.png`로 전체 직사각형 영역을 먼저 확인하세요.
 
 Fluent Launcher: Dimension **2D**, **Double Precision**, Solver Processes 4, Working Directory = `examples\airfoil_dataset`
 
@@ -25,14 +25,16 @@ Fluent Launcher: Dimension **2D**, **Double Precision**, Solver Processes 4, Wor
 
 1. `File > Read > Mesh...` → `runs\_meshes\0012_c0.3\mesh.msh`
 2. `Domain > Mesh > Check`: 끝에 `Done.`, ERROR 없음
-   - Domain Extents가 대략 x −14.9 ~ 15.1 m, y −15 ~ 15 m (반지름 50c = 15 m 원)
+   - Domain Extents가 x −6 ~ 12 m, y −6 ~ 6 m (직사각형: 앞전 기준 앞 20c, 뒤 40c, 위·아래 20c, 코드 0.3 m)
 3. `Domain > Mesh > Quality`: Minimum Orthogonal Quality 0.1 이상이면 양호
 4. 경계 이름과 타입
 
 | 경계 | 타입 | 위치 |
 |---|---|---|
-| `inlet` | velocity-inlet | 원거리 경계 앞쪽 반원 |
-| `outlet` | pressure-outlet | 원거리 경계 뒤쪽 반원 |
+| `inlet` | velocity-inlet | 직사각형의 앞·위·아래 변 |
+| `outlet` | pressure-outlet | 직사각형의 뒤 변 |
+
+위·아래 변도 `inlet`인 이유: 받음각을 inlet 속도 성분으로 주기 때문에 유동이 아래 변으로 들어와 위 변으로 나갑니다. 위·아래를 symmetry로 두면 유동을 수평으로 강제해 받음각이 제대로 들어가지 않습니다. 자유류 속도를 지정하는 velocity-inlet으로 두는 것이 일반적인 직사각형 영역 설정입니다.
 | `main` | wall | 익형 |
 | `interior-fluid` | interior | |
 
@@ -67,6 +69,7 @@ Density **constant 1.225**, Viscosity **constant 1.7894e-05** (마하수 0.03~0.
 ## 6. Boundary Conditions
 
 ### `inlet` (velocity-inlet)
+- 앞·위·아래 변이 모두 이 경계 하나라서 한 번만 설정하면 됩니다.
 - Velocity Specification Method: **Components**
 - X-Velocity: 입력란 오른쪽 드롭다운에서 expression → `speed * cos(alpha)`
 - Y-Velocity: expression → `speed * sin(alpha)`
