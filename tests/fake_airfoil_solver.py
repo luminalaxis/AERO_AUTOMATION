@@ -3,7 +3,8 @@
 - NACA 4자리 코드에서 캠버·두께로 대략적인 양력선과 실속각을 만든다.
 - 실속각 + 2° 넘으면 CL이 크게 진동한다 (oscillating 판정 확인용).
 - AOA=99 면 Fluent처럼 발산 메시지를 내고 끝난다.
-- 결과는 물체축 cx, cy (도구가 받음각으로 회전해 cl, cd 계산).
+- 6415, Re 2e5, 16°는 계수가 비정상적으로 커져 diverged(coefficient out of range)로 판정된다.
+- 결과는 물체축 cx, cy (도구가 받음각으로 회전해 cl, cd 계산)와 벽면 y+ (yplus-max, yplus-avg).
 """
 import math
 import re
@@ -30,17 +31,22 @@ else:
 cd = 0.007 + 0.3 * t * 0.02 + 0.00015 * aoa**2 + (0.02 * (aoa - stall) if aoa > stall else 0.0)
 cd *= (reynolds / 2e5) ** -0.2
 
-lines = ['"coef-rfile"', '"Iteration" "cx" "cy"', '("Iteration" "cx" "cy")']
+blowup = code == "6415" and reynolds < 3e5 and aoa >= 16
+yplus = 0.9 * (reynolds / 5e5) ** 0.9 * (1 + 2 * t)   # 첫 셀 높이는 Re 5e5 기준 → y+ ≈ 1
+
+columns = '"Iteration" "cx" "cy" "yplus-max" "yplus-avg"'
+lines = ['"coef-rfile"', columns, f"({columns})"]
 a = math.radians(aoa)
-n = 400
+n = 800
 for it in range(1, n + 1):
     decay = math.exp(-it / 40)
     osc = 0.08 * math.sin(it / 6) if aoa > stall + 2 else 0.0
-    cl_i = cl * (1 + 0.3 * decay) + osc
+    cl_i = 50.0 if blowup else cl * (1 + 0.3 * decay) + osc
     cd_i = cd * (1 + 0.5 * decay) + 0.1 * abs(osc) * cd
     cx = cd_i * math.cos(a) - cl_i * math.sin(a)
     cy = cl_i * math.cos(a) + cd_i * math.sin(a)
-    lines.append(f"{it} {cx:.10e} {cy:.10e}")
+    yp = yplus * (1 + 0.2 * decay)
+    lines.append(f"{it} {cx:.10e} {cy:.10e} {yp:.6e} {0.45 * yp:.6e}")
 Path("coef-rfile.out").write_text("\n".join(lines) + "\n")
 print("  iter  continuity  x-velocity  y-velocity           k       omega     time/iter")
 print(f"   {n}  {1e-5 if aoa <= stall else 3e-3:.4e}  2.1000e-07  3.0000e-07  4.0000e-06  5.0000e-06  0:00:00  0")

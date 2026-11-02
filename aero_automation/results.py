@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .cases import Case
 from .config import ProjectConfig, safe_name
-from .convergence import ConvergenceConfig, classify, coefficient_history, solver_log_info
+from .convergence import OSCILLATING, ConvergenceConfig, classify, coefficient_history, solver_log_info
 from .meshing import mesh_name
 from .runner import LOG_NAME, read_status
 
@@ -94,22 +94,29 @@ def summarize_case(cfg: ProjectConfig, case: Case) -> dict:
     row["state"] = status.get("state", "pending")
     row["elapsed_min"] = round(status["elapsed_sec"] / 60, 2) if status.get("elapsed_sec") else ""
     files = sorted({p for pattern in cfg.results.report_files for p in case.dir.glob(pattern)})
-    history = None
-    for path in files:
-        headers, data = parse_report_file(path)
-        if history is None:
-            history = coefficient_history(headers, data, row.get("flow_angle", row.get(cfg.results.x_param)),
-                                          bool(row.get("downforce")))
-        for key, value in summarize_rows(headers, data, cfg.results.average_last).items():
+    reports = [(path, *parse_report_file(path)) for path in files]
+    angle = row.get("flow_angle", row.get(cfg.results.x_param))
+    history = next((h for h in (coefficient_history(headers, data, angle, bool(row.get("downforce")))
+                                for _, headers, data in reports) if h is not None), None)
+    conv: dict = {}
+    if row["state"] not in ("pending", "screened"):
+        log_info = solver_log_info(case.dir / LOG_NAME)
+        conv = classify(history, ConvergenceConfig.from_dict(cfg.convergence), status, log_info)
+        conv.update({k: v for k, v in log_info.items() if k.startswith("res_")})
+    # 결과값 = 마지막 N 반복 평균. 진동 케이스는 average_last_oscillating(예: 500)으로 더 길게 평균
+    window = cfg.results.average_last
+    if conv.get("conv_state") == OSCILLATING and cfg.results.average_last_oscillating:
+        window = cfg.results.average_last_oscillating
+    for path, headers, data in reports:
+        for key, value in summarize_rows(headers, data, window).items():
             if key == "iter_done":
                 row["iter_done"] = max(row.get("iter_done", 0), int(value))
                 continue
             column = key if key not in row else f"{path.stem}.{key}"
             row[column] = value
-    if row["state"] not in ("pending", "screened"):
-        log_info = solver_log_info(case.dir / LOG_NAME)
-        row.update(classify(history, ConvergenceConfig.from_dict(cfg.convergence), status, log_info))
-        row.update({k: v for k, v in log_info.items() if k.startswith("res_")})
+        if data:
+            row["avg_iters"] = max(row.get("avg_iters", 0), min(max(1, window), len(data)))
+    row.update(conv)
     if cfg.results.wind_axes:
         _wind_axes(row, cfg.results.x_param)
     if isinstance(row.get("cl"), float) and isinstance(row.get("cd"), float) and row["cd"]:

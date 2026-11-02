@@ -4,7 +4,10 @@
 runs/dataset/ 에 저장한다.
 
   dataset.csv   케이스 1건 = 1행. 입력(CST 계수, aoa, log10_re), 목표(cl, log10_cd),
-                수렴 상태(conv_state), 실속 부근 여부(near_stall), 분할(split)
+                수렴 상태(conv_state), 평균에 쓴 반복 수(avg_iters), y+(yplus_max, yplus_avg),
+                실속 부근 여부(near_stall), 분할(split).
+                [ml] tsst_summary가 있으면 같은 케이스의 Transition SST 정답과 차이
+                (cl_tsst, log10_cd_tsst, d_cl_tsst, d_log10_cd_tsst = T-SST − SST)
   airfoils.csv  형상별 CST 계수(면당 8개 → cst16_*, 면당 4개 → cst8_*), 피팅 오차, 두께·캠버,
                 얇은 익형 이론 무양력각 α0, 분할
   split.json    형상 → 분할 (train / val / test / test_ood). 한 번 만들면 고정되고,
@@ -49,6 +52,7 @@ class MLConfig:
     shape_key: str = "airfoil"     # 형상 이름 변수 (없으면 main_airfoil)
     family_key: str = "family"
     re_key: str = "reynolds"
+    tsst_summary: str = ""         # Transition SST로 다시 푼 케이스의 summary.csv (예: runs_tsst/summary.csv)
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "MLConfig":
@@ -128,6 +132,53 @@ def _num(v) -> float | None:
     return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else None
 
 
+def yplus_columns(summary_row: dict) -> dict:
+    """리포트 파일의 y+ 열(Fluent 리포트 이름 yplus-max, yplus-avg 등) → yplus_max, yplus_avg."""
+    out = {}
+    for key, value in summary_row.items():
+        name = str(key).lower().replace("-", "_").replace(" ", "_")
+        if name.startswith("yplus") and isinstance(value, float) and math.isfinite(value):
+            out[name] = value
+    return out
+
+
+def load_tsst(path: Path, usable: set[str]) -> dict[str, dict]:
+    """Transition SST 결과(summary.csv) → {케이스: {conv_state_tsst, cl_tsst, log10_cd_tsst}}.
+
+    수렴 상태가 usable이 아니거나 값이 없으면 상태만 남긴다.
+    """
+    out: dict[str, dict] = {}
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        for raw in csv.DictReader(f):
+            state = raw.get("conv_state") or ""
+            if not raw.get("case") or state in ("", "no_data"):
+                continue
+            entry = {"conv_state_tsst": state}
+            try:
+                cl, cd = float(raw.get("cl", "")), float(raw.get("cd", ""))
+            except ValueError:
+                cl = cd = math.nan
+            if state in usable and math.isfinite(cl) and math.isfinite(cd) and cd > 0:
+                entry.update(cl_tsst=cl, log10_cd_tsst=math.log10(cd))
+            out[raw["case"]] = entry
+    return out
+
+
+def join_tsst(rows: list[dict], tsst: dict[str, dict], usable: set[str]) -> list[dict]:
+    """SST 정답과 Transition SST 정답의 차이(d_cl_tsst, d_log10_cd_tsst = T-SST − SST). 비교된 행 목록 반환."""
+    joined = []
+    for r in rows:
+        t = tsst.get(r["case"])
+        if t is None:
+            continue
+        r.update(t)
+        if "cl_tsst" in t and r["conv_state"] in usable and r["cl"] is not None and r["log10_cd"] is not None:
+            r["d_cl_tsst"] = t["cl_tsst"] - r["cl"]
+            r["d_log10_cd_tsst"] = t["log10_cd_tsst"] - r["log10_cd"]
+            joined.append(r)
+    return joined
+
+
 def mark_near_stall(rows: list[dict], window: float, usable: set[str]) -> None:
     """형상·Re별 CL 최대 받음각(aoa_clmax)과 그 ± window 안인지(near_stall)를 기록한다.
 
@@ -199,15 +250,30 @@ def build_dataset(cfg: ProjectConfig, cases: list[Case], resplit: bool = False) 
             "conv_cl_std": r.get("conv_cl_std", ""), "conv_cd_std": r.get("conv_cd_std", ""),
             "cl": cl, "cd": cd,
             "log10_cd": math.log10(cd) if cd is not None and cd > 0 else None,
+            "avg_iters": r.get("avg_iters", ""),
+            **yplus_columns(r),
         }
         if cl is None or row["log10_cd"] is None:
             row["conv_state"] = row["conv_state"] if row["conv_state"] == "diverged" else "no_data"
         row.update({k: v for k, v in info.items()
                     if k.startswith("cst") or k in ("thickness", "camber", "alpha0_thin_deg", "te_thickness")})
         rows.append(row)
-    mark_near_stall(rows, ml.near_stall_window, set(ml.train_states))
+    usable = set(ml.train_states)
+    mark_near_stall(rows, ml.near_stall_window, usable)
 
     labeled = [r for r in rows if r["conv_state"] != "no_data"]
+    tsst = None
+    if ml.tsst_summary:
+        tsst_path = (cfg.root / ml.tsst_summary).resolve()
+        if tsst_path.is_file():
+            tsst = _tsst_stats(join_tsst(labeled, load_tsst(tsst_path, usable), usable))
+        else:
+            warnings.append(f"Transition SST 결과가 없습니다: {tsst_path}  "
+                            "(Transition SST 프로젝트에서 run 후 collect)")
+    yplus = [r["yplus_max"] for r in labeled if r.get("yplus_max") is not None and r["conv_state"] in usable]
+    if labeled and not any(k.startswith("yplus") for r in labeled for k in r):
+        warnings.append("y+ 리포트가 없습니다. 베이스 케이스에 yplus-max, yplus-avg 리포트를 추가하세요 "
+                        "(docs/FLUENT_BASE_CASE_AIRFOIL.md 9단계).")
     _write_csv(out_dir / "dataset.csv", labeled)
     _write_csv(out_dir / "airfoils.csv", sorted(shapes.values(), key=lambda s: (s["split"], s["shape"])))
     plot = _plot_worst_fits(shapes, fits, cfg.root, out_dir / "cst_fits.png")
@@ -220,7 +286,23 @@ def build_dataset(cfg: ProjectConfig, cases: list[Case], resplit: bool = False) 
     if moved:
         warnings.append(f"분할이 바뀐 형상 {len(moved)}개 (holdout_families 변경 등): {', '.join(moved[:5])}")
     return {"dir": out_dir, "rows": labeled, "counts": counts, "states": states,
-            "near_stall": sum(r["near_stall"] for r in labeled), "warnings": warnings, "plot": plot}
+            "near_stall": sum(r["near_stall"] for r in labeled), "warnings": warnings, "plot": plot,
+            "yplus": {"n": len(yplus), "median": float(np.median(yplus)), "max": float(np.max(yplus))} if yplus else None,
+            "tsst": tsst}
+
+
+def _tsst_stats(joined: list[dict]) -> dict:
+    """SST vs Transition SST 차이 요약 (Re별)."""
+    stats = {"n": len(joined), "by_re": {}}
+    for re in sorted({r["reynolds"] for r in joined}):
+        sub = [r for r in joined if r["reynolds"] == re]
+        dcl = np.abs([r["d_cl_tsst"] for r in sub])
+        dcd = np.abs([r["d_log10_cd_tsst"] for r in sub])
+        stats["by_re"][re] = {"n": len(sub), "median_abs_d_cl": float(np.median(dcl)), "max_abs_d_cl": float(dcl.max()),
+                              "max_d_cl_case": sub[int(dcl.argmax())]["case"],
+                              "median_abs_d_log10_cd": float(np.median(dcd)), "max_abs_d_log10_cd": float(dcd.max()),
+                              "max_d_log10_cd_case": sub[int(dcd.argmax())]["case"]}
+    return stats
 
 
 def _write_csv(path: Path, rows: list[dict]) -> Path:
