@@ -65,6 +65,10 @@ def plot_mesh(nodes: np.ndarray, cells: list, geom, out_dir: Path, title: str = 
         ylim = (te[1] - 0.6 * r, te[1] + r) if inverted else (te[1] - r, te[1] + 0.6 * r)
         views.append((f"mesh_slot{i}.png", (te[0] - r, te[0] + r), ylim))
     views.append(("mesh_le.png", (-0.03, 0.05), (-0.035, 0.035)))
+    # 전체 해석 영역 (바깥 경계 모양과 크기 확인용)
+    (nx0, ny0), (nx1, ny1) = nodes.min(0), nodes.max(0)
+    pad = 0.02 * max(nx1 - nx0, ny1 - ny0)
+    views.append(("mesh_domain.png", (nx0 - pad, nx1 + pad), (ny0 - pad, ny1 + pad)))
 
     polys = [nodes[list(c)] for c in cells]
     saved = []

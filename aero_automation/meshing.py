@@ -38,10 +38,17 @@ class MeshSettings:
     wake_size: float = 0.01       # 후류 영역 셀 크기 [c]
     wake_length: float = 3.0      # 후류 세분화 길이 [c]
     wake_angles: list = None      # 뒷전에서 뻗는 후류선 각도 [deg] (받음각 범위를 덮도록)
-    farfield_radius: float = 50.0 # 원거리 경계 반지름 [c]
-    farfield_size: float = 5.0    # 원거리 경계 셀 크기 [c]
-    farfield_split: bool = False  # true면 원거리 경계를 앞쪽 반원 inlet(velocity-inlet) +
+    # 지면이 없을 때(자유류) 영역 모양: "circle" = 원형 원거리 경계, "box" = 직사각형 인클로저
+    farfield_shape: str = "circle"
+    farfield_radius: float = 50.0 # (circle) 원거리 경계 반지름 [c]
+    farfield_size: float = 5.0    # (circle) 원거리 경계 셀 크기 [c]
+    farfield_split: bool = False  # (circle) true면 앞쪽 반원 inlet(velocity-inlet) +
                                   # 뒤쪽 반원 outlet(pressure-outlet)으로 나눔 (밀도 일정 비압축 해석용)
+    # (box) 직사각형 인클로저: 앞·위·아래 = inlet(velocity-inlet), 뒤 = outlet(pressure-outlet)
+    box_upstream: float = 20.0    # 앞전 ~ inlet(앞 경계) 거리 [c]
+    box_downstream: float = 40.0  # 앞전 ~ outlet(뒤 경계) 거리 [c]
+    box_height: float = 20.0      # 시위선 ~ 위쪽/아래쪽 경계 거리 [c] (전체 높이는 2배)
+    box_far_size: float = 2.0     # 바깥 경계 셀 크기 [c]
     # 지면이 있을 때 (케이스 변수 ground_clearance): 직사각형 영역
     ground_upstream: float = 5.0     # 메인 앞전 ~ inlet 거리 [c]
     ground_downstream: float = 12.0  # 메인 앞전 ~ outlet 거리 [c]
@@ -59,6 +66,10 @@ class MeshSettings:
         obj = cls(**data)
         if obj.wake_angles is None:
             obj.wake_angles = [-10.0, 0.0, 10.0, 20.0]
+        if obj.farfield_shape not in ("circle", "box"):
+            raise ConfigError(f"[mesh] farfield_shape는 'circle' 또는 'box'여야 합니다: {obj.farfield_shape!r}")
+        if obj.farfield_shape == "box" and min(obj.box_upstream, obj.box_downstream - 1, obj.box_height) <= 0:
+            raise ConfigError("[mesh] box_upstream, box_height는 0보다, box_downstream은 1(시위)보다 커야 합니다.")
         return obj
 
     def first_cell_height(self) -> float:
@@ -68,7 +79,10 @@ class MeshSettings:
 
 
 _NOT_IN_FINGERPRINT = ("timeout",)          # 메쉬 결과에 영향 없는 항목
-_ADDED_DEFAULTS = {"farfield_split": False}  # 나중에 추가된 항목과 그 기본값
+_ADDED_DEFAULTS = {                         # 나중에 추가된 항목과 그 기본값
+    "farfield_split": False, "farfield_shape": "circle",
+    "box_upstream": 20.0, "box_downstream": 40.0, "box_height": 20.0, "box_far_size": 2.0,
+}
 
 
 @dataclass
@@ -176,7 +190,19 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     loops = [geo.addCurveLoop(c) for c in walls.values()]
 
     ground_y = geom.info.get("ground_y")
-    if ground_y is None:
+    if ground_y is None and s.farfield_shape == "box":
+        # 자유류 직사각형 인클로저: 받음각은 inlet 속도 성분으로 주므로 유동이 아래 경계로 들어와
+        # 위 경계로 나간다. 그래서 앞·위·아래를 모두 inlet(velocity-inlet, 자유류 속도 지정)으로 두고
+        # 뒤만 outlet(pressure-outlet)으로 한다.
+        far_size = s.box_far_size
+        grow = 0.5 * min(s.box_upstream, s.box_height)
+        x0, x1 = -s.box_upstream, s.box_downstream
+        y0, y1 = -s.box_height, s.box_height
+        c = [geo.addPoint(x, y, 0, lc) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+        bottom, right, top, left = (geo.addLine(c[i], c[(i + 1) % 4]) for i in range(4))
+        outer_loop = geo.addCurveLoop([bottom, right, top, left])
+        outer = {"inlet": ([left, top, bottom], "velocity-inlet"), "outlet": ([right], "pressure-outlet")}
+    elif ground_y is None:
         # 자유류: 원형 원거리 경계 하나 (pressure-far-field)
         R = s.farfield_radius
         far_size = s.farfield_size
