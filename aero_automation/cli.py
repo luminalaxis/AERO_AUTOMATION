@@ -139,6 +139,38 @@ def cmd_run(args) -> int:
     return 1 if counts.get("failed") else 0
 
 
+def cmd_airfoils(args) -> int:
+    """익형 좌표 일괄 다운로드/목록/미리보기."""
+    from pathlib import Path
+
+    from .airfoils import AIRFOIL_DIR, fetch_series, list_remote, plot_previews, select, write_index
+
+    cfg_path = Path(args.config)
+    out_dir = Path(args.dir) if args.dir else (cfg_path.resolve().parent if cfg_path.is_file() else Path.cwd()) / AIRFOIL_DIR
+    if args.action == "fetch":
+        rows = fetch_series(args.series, out_dir, force=args.force)
+        bad = [r for r in rows if r["status"] != "ok"]
+        new = sum(1 for r in rows if r.get("downloaded"))
+        print(f"\n{len(rows)}개 중 새로 받음 {new}개, 검증 실패 {len(bad)}개 → {out_dir}")
+        for r in bad[:20]:
+            print(f"  [실패] {r['name']}: {r.get('message')}")
+        if args.preview:
+            print(f"미리보기: {len(plot_previews(out_dir))}장 (_preview_*.png)")
+        print(f"목록: {out_dir / 'index.csv'} (두께, 캠버, 뒷전 간격, 점 개수)")
+        print("설정에서는 이름만 쓰면 됩니다. 예: main_airfoil = \"s1223\"")
+        return 1 if bad else 0
+    if args.action == "list":
+        names = select(list_remote(), args.series)
+        print("\n".join(names))
+        print(f"\n{len(names)}개 ({', '.join(args.series)})")
+        return 0
+    # index: 폴더에 직접 넣은 파일까지 다시 검사
+    print(f"목록 갱신: {write_index(out_dir)}")
+    if args.preview:
+        print(f"미리보기: {len(plot_previews(out_dir))}장")
+    return 0
+
+
 def cmd_view(args) -> int:
     """메쉬를 gmsh 창으로 열어 확대·이동하며 확인 (없으면 먼저 생성)."""
     from .meshing import GMSH_FILE
@@ -233,6 +265,15 @@ def main(argv=None) -> int:
     p.add_argument("--dry-run", action="store_true", help="목록만 출력하고 파일은 만들지 않음")
     add("screen", cmd_screen, "저충실도 해석 + 민감도 그래프 + 케이스 선별")
     add("view", cmd_view, "메쉬를 gmsh 창으로 미리보기 (--only 로 케이스 지정)")
+    p = sub.add_parser("airfoils", help="익형 좌표 자동 수집 (UIUC 데이터베이스)")
+    p.add_argument("action", choices=["fetch", "list", "index"],
+                   help="fetch: 다운로드, list: 원격 목록 보기, index: 폴더 검사·목록 갱신")
+    p.add_argument("series", nargs="*", default=["naca", "s", "e"],
+                   help="시리즈 (기본: naca s e). 정규식도 가능, 예: 'sd.*'")
+    p.add_argument("--dir", help="저장 폴더 (기본: project.toml 옆 airfoils)")
+    p.add_argument("--force", action="store_true", help="이미 받은 파일도 다시 받기")
+    p.add_argument("--preview", action="store_true", help="시리즈별 미리보기 그림 저장")
+    p.set_defaults(func=cmd_airfoils)
     p = add("mesh", cmd_mesh, "형상별 메쉬 생성 (이미 있으면 건너뜀)")
     p.add_argument("--all", action="store_true", help="스크리닝 결과 무시하고 전체 형상 메쉬 생성")
     p.add_argument("--force", action="store_true", help="기존 메쉬도 다시 생성")

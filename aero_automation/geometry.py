@@ -131,9 +131,14 @@ def normalize(xy: np.ndarray) -> tuple[np.ndarray, int]:
 
 
 def load_section(spec, root: Path, name: str) -> Element:
+    """NACA 4자리는 수식으로 생성, 그 외는 좌표 파일 (경로, airfoils/<이름>.dat, 없으면 UIUC에서 자동 다운로드)."""
     spec = str(spec).strip()
     code = spec.upper().removeprefix("NACA").strip()
-    xy = naca4(code) if re.fullmatch(r"\d{4}", code) else read_airfoil_file((root / spec).resolve())
+    if re.fullmatch(r"\d{4}", code):
+        xy = naca4(code)
+    else:
+        from .airfoils import resolve
+        xy = read_airfoil_file(resolve(spec, root).resolve())
     xy, le_idx = normalize(xy)
     return Element(name, xy, le_idx)
 

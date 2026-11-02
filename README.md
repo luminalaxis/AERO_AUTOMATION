@@ -73,13 +73,36 @@ aero-auto collect          # 결과 다시 정리 (summary, ranking, 그래프)
 - `screen`을 한 번 돌리면 이후 `mesh`, `run`은 제외된 케이스를 자동으로 건너뜁니다(상태 `screened`). 스크리닝을 무시하려면 `--all`.
 - 실패 판정: 종료 코드, 로그의 `Error:` / `Divergence detected`, 시간 초과(`timeout_minutes`), 메쉬 생성 실패.
 
+## 익형 좌표 자동 수집 (`airfoils`)
+
+NACA 4자리(`"2412"`)는 수식으로 바로 만들고, 그 외 익형은 [UIUC Airfoil Coordinates Database](https://m-selig.ae.illinois.edu/ads/coord_database.html)에서 받아 씁니다.
+
+```bash
+aero-auto airfoils fetch naca s e --preview   # NACA, S(Selig), E(Eppler) 시리즈 전체 다운로드 + 미리보기
+```
+
+```bash
+aero-auto airfoils list s                     # 받을 수 있는 S 시리즈 이름 목록만 보기
+```
+
+```bash
+aero-auto airfoils index --preview            # 폴더에 직접 넣은 .dat까지 다시 검사
+```
+
+- `project.toml` 옆 `airfoils\` 폴더에 `<이름>.dat`로 저장합니다. 이미 받은 파일은 건너뜁니다(`--force`로 다시 받기).
+- 시리즈 필터: `naca` = NACA 전체(4자리·5자리·6계열 등), `s` = Selig S 시리즈(`s1223`, `s1223rtl` 등, SD/SA 등은 제외), `e` = Eppler E 시리즈. 정규식도 됩니다(예: `"sd.*"`).
+- 받은 파일마다 좌표를 검증(점 개수, 윗면·아랫면 교차)하고 `airfoils\index.csv`에 두께·두께 위치·캠버·뒷전 간격을 기록합니다. 검증에 실패한 익형은 목록에 `bad`로 표시됩니다.
+- `--preview`는 시리즈별로 48개씩 형상을 그린 `_preview_<시리즈>_<n>.png`를 만듭니다.
+- **설정에서는 이름만 쓰면 됩니다:** `main_airfoil = "s1223"`, `flap1_airfoil = "e423"`. 폴더에 없으면 그 익형만 자동으로 받습니다. `"airfoils/xxx.dat"`처럼 경로를 써도 됩니다.
+- 인터넷 연결이 필요합니다. 막힌 망에서는 사이트에서 `.dat`를 직접 받아 `airfoils\`에 넣고 `aero-auto airfoils index`를 실행하세요.
+
 ## 형상 정의 (2단 / 3단)
 
 길이(코드, 갭, 오버랩)는 모두 **mm**로 받습니다. 플랩은 `flap1_*`, `flap2_*`(최대 `flap3_*`)로 지정하고, 앞의 요소에 이어 붙입니다.
 
 | 변수 | 의미 |
 |---|---|
-| `main_airfoil` | 메인 단면. NACA 4자리(`"2412"`) 또는 좌표 파일 경로(`"airfoils/main.dat"`, Selig/Lednicer 형식) |
+| `main_airfoil` | 메인 단면. NACA 4자리(`"2412"`), UIUC 익형 이름(`"s1223"`, `"e423"`, `"naca23012"`, 자동 다운로드) 또는 좌표 파일 경로(`"airfoils/main.dat"`, Selig/Lednicer 형식) |
 | `main_chord` | 메인 코드 길이 [mm] |
 | `flapN_airfoil` | N번째 플랩 단면 (같은 형식). 없으면 그 앞까지만 (flap1만 있으면 2단, flap2까지 있으면 3단) |
 | `flapN_chord` | N번째 플랩 코드 길이 [mm] |
