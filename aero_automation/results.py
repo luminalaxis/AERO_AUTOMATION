@@ -9,8 +9,9 @@ from pathlib import Path
 
 from .cases import Case
 from .config import ProjectConfig, safe_name
+from .convergence import ConvergenceConfig, classify, coefficient_history, solver_log_info
 from .meshing import mesh_name
-from .runner import read_status
+from .runner import LOG_NAME, read_status
 
 _QUOTED = re.compile(r'"([^"]*)"')
 _INDEX_COLUMNS = {"iteration", "time step", "flow-time", "flow time"}
@@ -45,7 +46,10 @@ def parse_report_file(path: Path) -> tuple[list[str], list[list[float]]]:
 
 
 def summarize_report(path: Path, average_last: int = 1) -> dict[str, float]:
-    headers, rows = parse_report_file(path)
+    return summarize_rows(*parse_report_file(path), average_last)
+
+
+def summarize_rows(headers: list[str], rows: list[list[float]], average_last: int = 1) -> dict[str, float]:
     if not rows:
         return {}
     tail = rows[-max(1, average_last):]
@@ -90,13 +94,22 @@ def summarize_case(cfg: ProjectConfig, case: Case) -> dict:
     row["state"] = status.get("state", "pending")
     row["elapsed_min"] = round(status["elapsed_sec"] / 60, 2) if status.get("elapsed_sec") else ""
     files = sorted({p for pattern in cfg.results.report_files for p in case.dir.glob(pattern)})
+    history = None
     for path in files:
-        for key, value in summarize_report(path, cfg.results.average_last).items():
+        headers, data = parse_report_file(path)
+        if history is None:
+            history = coefficient_history(headers, data, row.get("flow_angle", row.get(cfg.results.x_param)),
+                                          bool(row.get("downforce")))
+        for key, value in summarize_rows(headers, data, cfg.results.average_last).items():
             if key == "iter_done":
                 row["iter_done"] = max(row.get("iter_done", 0), int(value))
                 continue
             column = key if key not in row else f"{path.stem}.{key}"
             row[column] = value
+    if row["state"] not in ("pending", "screened"):
+        log_info = solver_log_info(case.dir / LOG_NAME)
+        row.update(classify(history, ConvergenceConfig.from_dict(cfg.convergence), status, log_info))
+        row.update({k: v for k, v in log_info.items() if k.startswith("res_")})
     if cfg.results.wind_axes:
         _wind_axes(row, cfg.results.x_param)
     if isinstance(row.get("cl"), float) and isinstance(row.get("cd"), float) and row["cd"]:
@@ -195,10 +208,13 @@ def collect(cfg: ProjectConfig, cases: list[Case], plots: bool = True) -> dict:
 
     if plots:
         from .plots import plot_convergence, plot_summary
+        states = {r["case"]: r.get("conv_state") for r in rows}
         for case in cases:
             files = sorted({p for pat in cfg.results.report_files for p in case.dir.glob(pat)})
             if files:
-                plot_convergence(files, case.dir / "convergence.png", title=case.name)
+                state = states.get(case.name)
+                title = f"{case.name} [{state}]" if state else case.name
+                plot_convergence(files, case.dir / "convergence.png", title=title)
         geo_keys = [k for k in keys if k not in split_by]
         cl_label = "Cl (downforce +)" if any(r.get("downforce") for r in rows) else "Cl"
         if split_by:

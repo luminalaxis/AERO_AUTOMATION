@@ -130,11 +130,49 @@ def normalize(xy: np.ndarray) -> tuple[np.ndarray, int]:
     return out[keep], le_idx
 
 
+CUSP_WEDGE_DEG = 1.0  # 뾰족한 뒷전 바로 앞 점 쌍의 쐐기각이 이보다 작으면 칼날형(cusp)으로 보고 정리
+TE_GAP_MIN = 5e-4     # 뒷전 두 끝점 간격이 이보다 작으면 [c] 뾰족한 뒷전으로 닫음
+
+
+def close_tiny_te_gap(xy: np.ndarray) -> np.ndarray:
+    """좌표 파일의 뒷전 끝점이 반올림 등으로 아주 조금 벌어져 있으면(예: S1221은 0.00001c) 뭉툭한 뒷전
+    면이 거의 0 길이가 되어 그 면의 셀이 찌그러진다. 두 끝점을 중점으로 모아 뾰족한 뒷전으로 만든다."""
+    gap = float(np.linalg.norm(xy[0] - xy[-1]))
+    if 0 < gap < TE_GAP_MIN:
+        xy = xy.copy()
+        xy[0] = xy[-1] = 0.5 * (xy[0] + xy[-1])
+    return xy
+
+
+def split_te_wedge(xy: np.ndarray) -> float:
+    """뒷전 바로 앞 윗면·아랫면 점이 이루는 쐐기각 [deg] (Selig 순서, 시위 = x축)."""
+    te, u, lo = xy[0], xy[1], xy[-2]
+    return float(np.degrees(np.arctan2(u[1] - lo[1], te[0] - min(u[0], lo[0]))))
+
+
+def open_cusp_te(xy: np.ndarray, le_idx: int, max_pairs: int = 3) -> tuple[np.ndarray, int]:
+    """칼날형(cusp) 뒷전 정리.
+
+    뒷전이 닫힌 좌표에서 뒷전 바로 앞의 윗면·아랫면 점이 거의 겹치면(쐐기각 < CUSP_WEDGE_DEG, 예: S4180은
+    0.2°) 두 곡선이 메쉬 단계에서 서로 교차해 gmsh가 끝없이 재시도한다. 그런 점 쌍을 지워 뒷전을
+    그 다음 점들이 이루는 쐐기로 만든다 (최대 max_pairs쌍, 바뀌는 길이는 보통 시위의 0.5% 이하).
+    """
+    if not np.allclose(xy[0], xy[-1], atol=1e-9):
+        return xy, le_idx
+    for _ in range(max_pairs):
+        if le_idx < 4 or len(xy) - le_idx < 5 or split_te_wedge(xy) >= CUSP_WEDGE_DEG:
+            break
+        xy = np.vstack([xy[:1], xy[2:-2], xy[-1:]])
+        le_idx -= 1
+    return xy, le_idx
+
+
 def load_section(spec, root: Path, name: str) -> Element:
     spec = str(spec).strip()
     code = spec.upper().removeprefix("NACA").strip()
     xy = naca4(code) if re.fullmatch(r"\d{4}", code) else read_airfoil_file((root / spec).resolve())
     xy, le_idx = normalize(xy)
+    xy, le_idx = open_cusp_te(close_tiny_te_gap(xy), le_idx)
     return Element(name, xy, le_idx)
 
 

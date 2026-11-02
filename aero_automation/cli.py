@@ -6,6 +6,10 @@
     python -m aero_automation run      # 배치 실행 (완료된 케이스는 건너뜀)
     python -m aero_automation status   # 케이스별 진행 상태
     python -m aero_automation collect  # 결과 요약 CSV, 순위, 그래프 생성
+
+    python -m aero_automation fetch-airfoils  # UIUC 좌표 파일 내려받기
+    python -m aero_automation dataset         # CST 계수 + 형상 단위 분할 → runs/dataset/
+    python -m aero_automation train           # 기준 방법 / LightGBM / MLP 학습·조건별 평가 → runs/ml/
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import argparse
 import sys
 from collections import Counter
 
-from .cases import build_cases, filter_cases
+from .cases import build_cases, filter_cases, partition_cases
 from .config import ConfigError, load_config
 from .expr import ExpressionError
 from .results import collect
@@ -23,7 +27,7 @@ from .runner import build_command, ensure_meshes, mark_screened, prepare_case, r
 
 def _load(args):
     cfg = load_config(args.config)
-    cases = filter_cases(build_cases(cfg), args.only)
+    cases = partition_cases(filter_cases(build_cases(cfg), args.only), getattr(args, "part", None))
     if not cases:
         raise ConfigError("조건에 맞는 케이스가 없습니다.")
     return cfg, cases
@@ -179,7 +183,64 @@ def cmd_status(args) -> int:
 
 def cmd_collect(args) -> int:
     cfg, cases = _load(args)
-    _print_collect(collect(cfg, cases), cfg)
+    _print_collect(collect(cfg, cases, plots=not args.no_plots), cfg)
+    return 0
+
+
+def cmd_fetch_airfoils(args) -> int:
+    from pathlib import Path
+
+    from .airfoil_db import UIUC_URL, UIUC_ZIP_URL, fetch_airfoils
+
+    cfg, cases = _load(args)
+    r = fetch_airfoils(cfg, cases, url=args.url or UIUC_URL,
+                       zip_path=Path(args.zip).resolve() if args.zip else None, force=args.force)
+    print(f"받음 {len(r['ok'])}개, 이미 있음 {len(r['skipped'])}개, 실패 {len(r['failed'])}개")
+    for spec, reason in r["failed"].items():
+        print(f"  [실패] {spec}: {reason}")
+    if r["failed"]:
+        print(f"사이트 접속이 안 되면 {UIUC_ZIP_URL} 을 받아 --zip 으로 지정하세요.")
+    return 1 if r["failed"] else 0
+
+
+def cmd_dataset(args) -> int:
+    from .dataset import build_dataset
+
+    cfg, cases = _load(args)
+    r = build_dataset(cfg, cases, resplit=args.resplit)
+    print(f"데이터셋: {r['dir']}  (dataset.csv, airfoils.csv, split.json, cst_fits.png)")
+    print("분할       형상   케이스")
+    for split, c in r["counts"].items():
+        print(f"  {split:<9} {c['shapes']:>4}  {c['cases']:>6}")
+    print("수렴 상태: " + ", ".join(f"{k} {v}" for k, v in sorted(r["states"].items())))
+    print(f"실속 부근(CL 최대 받음각 ± 창) 케이스: {r['near_stall']}")
+    for w in r["warnings"]:
+        print(f"[경고] {w}")
+    return 0
+
+
+def cmd_train(args) -> int:
+    from .learn import TrainOptions, train
+
+    cfg = load_config(args.config)
+    opts = TrainOptions(models=args.model, features=args.features,
+                        hidden=[int(h) for h in args.hidden.split(",") if h],
+                        n_seeds=args.seeds, epochs=args.epochs, stall_weight=args.stall_weight,
+                        ood_train_fraction=args.ood_train_fraction, name=args.name)
+    r = train(cfg, opts)
+    print(f"학습 케이스 {r['n_train']}개, 검증 {r['n_val']}개, 입력 {len(r['features'])}개 ({opts.features} + aoa + log10_re)")
+    if r["moved"]:
+        print(f"test_ood 형상 {len(r['moved'])}개를 학습에 추가: {', '.join(r['moved'])}")
+    print(f"\n{'model':<9}{'split':<10}{'condition':<20}{'n':>6}{'MAE CL':>9}{'MAE logCD':>11}"
+          f"{'PI80 width':>12}{'PI80 cover':>12}")
+    for m in r["metrics"]:
+        if m["condition"] not in ("all", "near_stall", "attached"):
+            continue
+        width = f"{m['width80_cl']:.3f}" if "width80_cl" in m else "-"
+        cover = f"{m['cover80_cl']:.0%}" if "cover80_cl" in m else "-"
+        print(f"{m['model']:<9}{m['split']:<10}{m['condition']:<20}{m['n']:>6}{m['mae_cl']:>9.4f}"
+              f"{m['mae_log10_cd']:>11.4f}{width:>12}{cover:>12}")
+    print(f"\n결과: {r['dir']}  (metrics.csv: 수렴 상태별 포함, predictions.csv, run.json)")
     return 0
 
 
@@ -192,6 +253,8 @@ def main(argv=None) -> int:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--only", nargs="+", metavar="PATTERN",
                        help="케이스/그룹 이름 필터 (와일드카드 가능, 예: 'M0.3*')")
+        p.add_argument("--part", metavar="K/N",
+                       help="형상 단위로 N등분한 K번째 몫만 (팀원 분담용, 예: 1/4)")
         p.set_defaults(func=func)
         return p
 
@@ -206,7 +269,26 @@ def main(argv=None) -> int:
     p.add_argument("-j", "--jobs", type=int, help="동시 실행 케이스 수 (라이선스 수 고려)")
     p.add_argument("--all", action="store_true", help="스크리닝 결과 무시하고 전체 케이스 실행")
     add("status", cmd_status, "진행 상태 확인")
-    add("collect", cmd_collect, "결과 요약 CSV, 형상 순위, 그래프 생성")
+    p = add("collect", cmd_collect, "결과 요약 CSV, 형상 순위, 그래프 생성")
+    p.add_argument("--no-plots", action="store_true", help="그래프 없이 CSV만 (케이스가 수천 개일 때 빠름)")
+    p = add("fetch-airfoils", cmd_fetch_airfoils, "UIUC 좌표 파일 내려받기 (없는 파일만)")
+    p.add_argument("--zip", help="UIUC coord_seligFmt.zip 경로 (사이트 대신 압축 파일에서 꺼냄)")
+    p.add_argument("--url", help="내려받을 주소 템플릿 (기본: UIUC, {name} = 파일 이름)")
+    p.add_argument("--force", action="store_true", help="이미 있는 파일도 다시 받기")
+    p = add("dataset", cmd_dataset, "학습용 데이터셋 (CST 계수, 수렴 상태, 형상 단위 분할)")
+    p.add_argument("--resplit", action="store_true", help="split.json을 무시하고 형상 분할을 새로 함")
+    p = sub.add_parser("train", help="회귀 모델 학습·평가 (dataset 결과 사용)")
+    p.add_argument("--model", nargs="+", default=["baseline", "lgbm", "mlp"],
+                   choices=["baseline", "lgbm", "mlp"], help="학습할 모델 (기본: 셋 다)")
+    p.add_argument("--features", default="cst16", help="형상 특성: cst16(면당 8개) 또는 cst8(면당 4개)")
+    p.add_argument("--hidden", default="64,64", help="MLP 은닉층 크기 (예: 32,32 / 128,128,128)")
+    p.add_argument("--seeds", type=int, default=5, help="MLP 앙상블 시드 수")
+    p.add_argument("--epochs", type=int, default=2000, help="MLP 최대 에폭 (검증 손실로 조기 종료)")
+    p.add_argument("--stall-weight", type=float, default=1.0, help="실속 부근 학습 케이스 가중치 (개선 실험)")
+    p.add_argument("--ood-train-fraction", type=float, default=0.0,
+                   help="처음 보는 형상(test_ood) 중 학습에 추가할 비율 (개선 실험)")
+    p.add_argument("--name", help="결과 폴더 이름 (기본: 특성_은닉층)")
+    p.set_defaults(func=cmd_train)
 
     args = parser.parse_args(argv)
     try:

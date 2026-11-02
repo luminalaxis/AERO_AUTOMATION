@@ -23,6 +23,8 @@ class Case:
 
 def _coerce(value: str):
     value = value.strip()
+    if len(value) > 1 and value[0] == "0" and value.isdigit():
+        return value  # "0012" 같은 NACA 코드는 문자열 그대로
     for conv in (int, float):
         try:
             return conv(value)
@@ -148,3 +150,26 @@ def filter_cases(cases: list[Case], patterns: list[str] | None) -> list[Case]:
         c for c in cases
         if any(fnmatch(c.name, p) or fnmatch(c.group, p) for p in patterns)
     ]
+
+
+def partition_cases(cases: list[Case], part: str | None) -> list[Case]:
+    """--part K/N 옵션: 형상(메쉬, 없으면 그룹) 단위로 N등분해 K번째 몫만 남긴다.
+
+    같은 형상의 받음각·Re 케이스는 같은 몫에 들어가서 메쉬를 한 사람만 만든다.
+    형상 이름 순서대로 번갈아 배정하므로 팀원별 케이스 수가 거의 같다.
+    """
+    if not part:
+        return cases
+    try:
+        k, n = (int(v) for v in part.split("/"))
+    except ValueError:
+        raise ConfigError(f"--part 형식은 K/N 입니다 (예: 1/4): {part!r}") from None
+    if not 1 <= k <= n:
+        raise ConfigError(f"--part K/N 에서 K는 1~N 이어야 합니다: {part!r}")
+
+    def unit(c: Case) -> str:
+        return c.mesh.name if c.mesh is not None else (c.group or c.name)
+
+    units = sorted({unit(c) for c in cases})
+    mine = {u for i, u in enumerate(units) if i % n == k - 1}
+    return [c for c in cases if unit(c) in mine]
