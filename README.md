@@ -41,6 +41,8 @@ numpy, matplotlib, gmsh가 함께 설치됩니다. gmsh는 pip 패키지에 실�
 pip install -e ".[ml]"
 ```
 
+터미널에서 `aero-auto`를 실행하면 맨 위에 로고와 날개 그림 배너가 나옵니다(명령 없이 `aero-auto`만 치면 배너 + 도움말). 출력을 파일로 넘기거나 파이프로 연결하면 배너는 자동으로 빠집니다. 끄려면 `--no-banner` 또는 환경 변수 `AERO_AUTO_NO_BANNER=1`, 색만 끄려면 `NO_COLOR=1`을 씁니다.
+
 ## 빠른 시작 (예제)
 
 ```bash

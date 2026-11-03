@@ -20,6 +20,7 @@ import argparse
 import sys
 from collections import Counter
 
+from .banner import print_banner
 from .cases import build_cases, filter_cases, partition_cases
 from .config import ConfigError, load_config
 from .expr import ExpressionError
@@ -340,7 +341,9 @@ def cmd_edge_cases(args) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="aero-auto", description="ANSYS 해석 케이스 배치 자동화")
     parser.add_argument("-c", "--config", default="project.toml", help="프로젝트 설정 파일 (기본: project.toml)")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--no-banner", action="store_true",
+                        help="시작 배너 숨기기 (환경 변수 AERO_AUTO_NO_BANNER=1 과 같음)")
+    sub = parser.add_subparsers(dest="command")
 
     def add(name, func, help_text):
         p = sub.add_parser(name, help=help_text)
@@ -395,6 +398,13 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_edge_cases)
 
     args = parser.parse_args(argv)
+    if args.command is None:  # 명령 없이 실행하면 배너 + 도움말
+        if not args.no_banner:
+            print_banner()
+        parser.print_help()
+        return 0
+    if not args.no_banner:
+        print_banner()
     try:
         return args.func(args)
     except (ConfigError, ExpressionError) as exc:
