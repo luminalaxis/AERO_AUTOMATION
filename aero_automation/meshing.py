@@ -47,7 +47,8 @@ class MeshSettings:
     farfield_size: float = 5.0    # (circle) 원거리 경계 셀 크기 [c]
     farfield_split: bool = False  # (circle) true면 앞쪽 반원 inlet(velocity-inlet) +
                                   # 뒤쪽 반원 outlet(pressure-outlet)으로 나눔 (밀도 일정 비압축 해석용)
-    # (box) 직사각형 인클로저: 앞 = inlet(velocity-inlet), 위·아래 = top·bottom(wall), 뒤 = outlet(pressure-outlet)
+    # (box) 직사각형 인클로저: 앞 = inlet(velocity-inlet), 위·아래 = top·bottom(wall,
+    #       Fluent에서 미끄럼 벽 = Specified Shear 0), 뒤 = outlet(pressure-outlet)
     box_upstream: float = 20.0    # 앞전 ~ inlet(앞 경계) 거리 [c]
     box_downstream: float = 40.0  # 앞전 ~ outlet(뒤 경계) 거리 [c]
     box_height: float = 20.0      # 시위선 ~ 위쪽/아래쪽 경계 거리 [c] (전체 높이는 2배)
@@ -212,8 +213,8 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
 
     ground_y = geom.info.get("ground_y")
     if ground_y is None and s.farfield_shape == "box":
-        # 자유류 직사각형 인클로저: 앞 = inlet(velocity-inlet), 위·아래 = top·bottom(wall),
-        # 뒤 = outlet(pressure-outlet)
+        # 자유류 직사각형 인클로저: 앞 = inlet(velocity-inlet), 위·아래 = top·bottom(wall,
+        # Fluent 베이스 케이스에서 미끄럼 벽 = Specified Shear 0으로 설정), 뒤 = outlet(pressure-outlet)
         far_size = s.box_far_size / f
         grow = 0.5 * min(s.box_upstream, s.box_height)
         x0, x1 = -s.box_upstream, s.box_downstream
