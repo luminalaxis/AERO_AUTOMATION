@@ -117,6 +117,34 @@ def main_cli(cfg_path, *args):
     return main(["-c", str(cfg_path), *args])
 
 
+def test_run_priority_and_limit(tmp_path, capsys):
+    cfg_path = make_project(tmp_path)
+    cfg = load_config(cfg_path)
+    cases = build_cases(cfg)
+    r = screen(cfg, cases, log=lambda *_: None)
+    spot = {n for s in r["spot_check"] for n in s["cases"]}
+    assert len(spot) >= 2
+    assert main_cli(cfg_path, "run", "--priority", "--limit", "2") == 0
+    done = [c.name for c in cases if read_status(c)["state"] == "done"]
+    assert len(done) == 2 and set(done) <= spot  # 스팟 체크부터 실행
+    assert "--limit 2" in capsys.readouterr().out
+    assert main_cli(cfg_path, "run", "--priority", "--limit", "3") == 0
+    assert sum(read_status(c)["state"] == "done" for c in cases) == 5  # 끝난 케이스는 빼고 다음 3개
+
+
+def test_flap_separation_warning():
+    from aero_automation.screening import ScreeningConfig, _flap_separation_warnings
+
+    c1, c2 = (("v", 40),), (("v", 100),)
+    geoms = [{"_cond": c, "feasible": True, "keep": keep, "flap_sep_est": sep}
+             for c in (c1, c2) for keep, sep in ((True, 0.4), (True, 0.44), (False, 0.2))]
+    (w,) = _flap_separation_warnings(geoms, [c1, c2], ScreeningConfig())
+    assert "[v=40] 42% (제외 20%)" in w and "[v=100]" in w and "*deflection" in w
+    for g in geoms:
+        g["flap_sep_est"] = 0.1
+    assert _flap_separation_warnings(geoms, [c1, c2], ScreeningConfig()) == []
+
+
 def test_check_spot_warns_when_pruned_geometry_wins():
     selection = {"metric": "ld_max_est",
                  "spot_check": [{"geometry": "geoB", "condition": {"v": 40}, "cases": ["b_a4"]}]}

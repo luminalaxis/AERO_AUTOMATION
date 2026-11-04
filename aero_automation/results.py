@@ -11,7 +11,7 @@ from .cases import Case
 from .config import ProjectConfig, safe_name
 from .convergence import OSCILLATING, ConvergenceConfig, classify, coefficient_history, solver_log_info
 from .meshing import mesh_name
-from .runner import LOG_NAME, read_status
+from .runner import LOG_NAME, TRANSCRIPT_NAME, read_status
 
 _QUOTED = re.compile(r'"([^"]*)"')
 _INDEX_COLUMNS = {"iteration", "time step", "flow-time", "flow time"}
@@ -100,7 +100,7 @@ def summarize_case(cfg: ProjectConfig, case: Case) -> dict:
                                 for _, headers, data in reports) if h is not None), None)
     conv: dict = {}
     if row["state"] not in ("pending", "screened"):
-        log_info = solver_log_info(case.dir / LOG_NAME)
+        log_info = solver_log_info(case.dir / LOG_NAME, case.dir / TRANSCRIPT_NAME)
         conv = classify(history, ConvergenceConfig.from_dict(cfg.convergence), status, log_info)
         conv.update({k: v for k, v in log_info.items() if k.startswith("res_")})
     # 결과값 = 마지막 N 반복 평균. 진동 케이스는 average_last_oscillating(예: 500)으로 더 길게 평균

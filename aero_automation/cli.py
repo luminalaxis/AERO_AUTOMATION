@@ -3,9 +3,11 @@
     python -m aero_automation plan     # 케이스 목록 확인 + 폴더/저널 생성
     python -m aero_automation screen   # 저충실도 해석으로 민감도 확인 + 가망 없는 케이스 제외
     python -m aero_automation mesh     # 형상별 메쉬 생성 + 형상/메쉬 이미지
+    python -m aero_automation check    # Fluent 실행 전 점검 (베이스 케이스, 메쉬, 저널, 경로, 디스크·시간)
     python -m aero_automation run      # 배치 실행 (완료된 케이스는 건너뜀)
     python -m aero_automation status   # 케이스별 진행 상태
     python -m aero_automation collect  # 결과 요약 CSV, 순위, 그래프 생성
+    python -m aero_automation gci      # 메쉬 독립성 확인 (mesh_level 3단계 → Richardson 외삽, GCI)
 
     python -m aero_automation fetch-airfoils  # UIUC 좌표 파일 내려받기
     python -m aero_automation dataset         # CST 계수 + 형상 단위 분할 → runs/dataset/
@@ -128,16 +130,37 @@ def cmd_screen(args) -> int:
                       f"L/D max {g['ld_max_est']:.1f}{stall_txt}")
     print(f"\n케이스 {len(cases)}개 → {n_kept}개 해석 ({(1 - n_kept / len(cases)) * 100:.0f}% 절감)")
     if r["spot_check"]:
-        n_spot = sum(len(s["cases"]) for s in r["spot_check"])
-        print(f"  (제외 계열 검증용 스팟 체크 {n_spot}개 포함)")
+        n_spot = len({n for s in r["spot_check"] for n in s["cases"]})
+        n_geo = len({s["geometry"] for s in r["spot_check"]})
+        print(f"  (제외 계열 검증용 스팟 체크 {n_spot}개 포함: 형상 {n_geo}개 × 대표 받음각. "
+              "run --priority 가 이 케이스부터 실행, 목록은 cases.csv의 spot_check 열)")
+    for w in r.get("warnings", []):
+        print(f"\n[주의] {w}")
     print(f"\n결과: {r['dir']}  (geometries.csv, cases.csv, sensitivity_*.png, screening_*.png)")
     print("이후 run 은 제외된 케이스를 자동으로 건너뜁니다 (전체 실행은 run --all).")
     return 0
 
 
+def _order_cases(cfg, cases, priority: bool, limit: int | None):
+    """run --priority: 스크리닝 우선순위(스팟 체크 → 유망한 계열·형상) 순서로, --limit N: 남은 케이스 중 앞의 N개만."""
+    if priority:
+        from .screening import load_selection
+
+        selection = load_selection(cfg) or {}
+        order = {n: i for i, n in enumerate(selection.get("priority", []))}
+        if not order:
+            print("[경고] 스크리닝 우선순위가 없습니다 (screen 을 다시 실행하세요). 원래 순서로 실행합니다.")
+        cases = sorted(cases, key=lambda c: order.get(c.name, len(order)))
+    if limit:
+        todo = [c for c in cases if read_status(c).get("state") != "done"]
+        cases = todo[:limit]
+        print(f"--limit {limit}: 남은 케이스 {len(todo)}개 중 {len(cases)}개만 실행")
+    return cases
+
+
 def cmd_run(args) -> int:
     cfg, cases = _load(args)
-    cases = _apply_selection(cfg, cases, args.all)
+    cases = _order_cases(cfg, _apply_selection(cfg, cases, args.all), args.priority, args.limit)
     print(f"총 {len(cases)}개 케이스 실행 (동시 실행 {args.jobs or cfg.max_parallel}개)")
     results = run_all(cfg, cases, force=args.force, max_parallel=args.jobs)
     counts = Counter(r.state for r in results)
@@ -150,7 +173,7 @@ def cmd_mesh(args) -> int:
     cfg, cases = _load(args)
     if cfg.mesh is None:
         raise ConfigError("project.toml에 [mesh] 섹션이 없습니다.")
-    errors = ensure_meshes(cfg, _apply_selection(cfg, cases, args.all), force=args.force)
+    errors = ensure_meshes(cfg, _apply_selection(cfg, cases, args.all), force=args.force, workers=args.jobs)
     print(f"\n메쉬 폴더: {cfg.output_dir / '_meshes'}  (형상별 mesh.msh, geometry.png, mesh*.png)")
     return 1 if errors else 0
 
@@ -171,22 +194,90 @@ def _print_collect(result: dict, cfg) -> None:
         print(f"[경고] {w}")
 
 
+def cmd_check(args) -> int:
+    from .preflight import ERROR, TODO, format_items, run_checks
+
+    cfg, cases = _load(args)
+    items = run_checks(cfg, cases, parallel=args.jobs)
+    print(format_items(items))
+    return 1 if any(it.level in (ERROR, TODO) for it in items) else 0
+
+
 def cmd_status(args) -> int:
-    _, cases = _load(args)
+    cfg, cases = _load(args)
+    statuses = {c.name: read_status(c) for c in cases}
 
     def state(c):
-        s = read_status(c)
+        s = statuses[c.name]
         return s["state"] + (f" ({s['message']})" if s.get("message") else "")
 
     _print_table(cases, ("state", state))
-    counts = Counter(read_status(c)["state"] for c in cases)
+    counts = Counter(s["state"] for s in statuses.values())
     print("\n" + ", ".join(f"{k} {v}" for k, v in counts.items()))
+    eta = _eta(list(statuses.values()), args.jobs or cfg.max_parallel)
+    if eta:
+        print(eta)
     return 0
+
+
+def _eta(statuses: list[dict], parallel: int) -> str | None:
+    """끝난 케이스의 실행 시간(중앙값)으로 남은 케이스(대기·실행 중·실패)의 예상 소요 시간."""
+    import statistics
+
+    times = [s["elapsed_sec"] for s in statuses if s.get("state") == "done" and s.get("elapsed_sec")]
+    left = sum(1 for s in statuses if s.get("state") in ("pending", "running", "failed", "interrupted", "unknown"))
+    if not times or not left:
+        return None
+    per_case = statistics.median(times)
+    hours = per_case * left / max(1, parallel) / 3600
+    return (f"남은 케이스 {left}개 × 케이스당 {per_case / 60:.1f}분(완료 {len(times)}개 중앙값) "
+            f"÷ 동시 {max(1, parallel)}개 ≈ {hours:.1f}시간 ({hours / 24:.1f}일)")
 
 
 def cmd_collect(args) -> int:
     cfg, cases = _load(args)
     _print_collect(collect(cfg, cases, plots=not args.no_plots), cfg)
+    return 0
+
+
+def cmd_gci(args) -> int:
+    import math
+
+    from .mesh_study import mesh_study
+
+    cfg, cases = _load(args)
+    r = mesh_study(cfg, cases, quantities=args.quantity, plots=not args.no_plots)
+    print("메쉬 독립성 (Celik et al. 2008 GCI): 1 = 조밀, 2 = 보통, 3 = 성김 (셀 수 기준)")
+    print("GCI = 그 메쉬 결과의 이산화 불확실성 (95% 신뢰 수준 추정), 외삽 = 셀 크기 0으로 외삽한 값\n")
+    print(f"{'group':<58}{'q':<9}{'조밀':>10}{'보통':>10}{'성김':>10}{'p':>6}{'외삽':>10}"
+          f"{'GCI 조밀':>9}{'GCI 보통':>9}  판정")
+    last = None
+    for e in r["rows"]:
+        group = e["group"] if e["group"] != last else ""
+        last = e["group"]
+
+        def pct(v):
+            return f"{v * 100:.2f}%" if isinstance(v, float) and math.isfinite(v) else "-"
+
+        def num(v, fmt=".4f"):
+            return format(v, fmt) if isinstance(v, float) and math.isfinite(v) else "-"
+
+        print(f"{group[:57]:<58}{e['quantity']:<9}{e['phi_fine']:>10.4f}{e['phi_medium']:>10.4f}"
+              f"{e['phi_coarse']:>10.4f}{num(e.get('p'), '.2f'):>6}{num(e.get('phi_ext')):>10}"
+              f"{pct(e.get('gci_fine')):>9}{pct(e.get('gci_medium')):>9}  {e['convergence']}")
+    for g in r["incomplete"]:
+        print(f"[참고] {g['group']}: 끝난 메쉬 단계 {g['levels']}개 (3단계가 모두 끝나야 계산)")
+    bad = [e for e in r["rows"] if e["quantity"] in ("cl", "cd") and not (
+        isinstance(e.get("gci_medium"), float) and math.isfinite(e["gci_medium"])
+        and e["gci_medium"] <= (0.02 if e["quantity"] == "cl" else 0.05))]
+    if r["rows"]:
+        if bad:
+            print(f"\n[판단] 보통(본 배치) 메쉬의 GCI가 기준(Cl 2%, Cd 5%)을 넘거나 수렴이 단조롭지 않은 항목 {len(bad)}개."
+                  " 메쉬를 조밀하게(project.toml [mesh] refine 1.3~1.5 또는 surface_cells·near_size) 하거나,"
+                  " 반복 수렴(conv_state)부터 확인하세요.")
+        else:
+            print("\n[판단] 보통(본 배치) 메쉬의 GCI가 Cl 2%, Cd 5% 이내입니다. 현재 [mesh] 설정으로 본 배치를 진행해도 됩니다.")
+    print(f"\n결과: {r['csv']}" + (f"  (그래프 {len(r['plots'])}개)" if r["plots"] else ""))
     return 0
 
 
@@ -338,6 +429,16 @@ def cmd_edge_cases(args) -> int:
     return 0
 
 
+def _safe_console() -> None:
+    """출력을 파일로 넘길 때(예: aero-auto run > log.txt) 한국어 Windows 기본 인코딩(cp949)에 없는
+    문자(−, ≈ 등)가 나와도 멈추지 않도록, 표현할 수 없는 문자는 ?로 바꿔 쓴다."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="aero-auto", description="ANSYS 해석 케이스 배치 자동화")
     parser.add_argument("-c", "--config", default="project.toml", help="프로젝트 설정 파일 (기본: project.toml)")
@@ -360,13 +461,23 @@ def main(argv=None) -> int:
     p = add("mesh", cmd_mesh, "형상별 메쉬 생성 (이미 있으면 건너뜀)")
     p.add_argument("--all", action="store_true", help="스크리닝 결과 무시하고 전체 형상 메쉬 생성")
     p.add_argument("--force", action="store_true", help="기존 메쉬도 다시 생성")
+    p.add_argument("-j", "--jobs", type=int, help="동시에 만들 메쉬 수 (기본: CPU 코어 수, 최대 8. 메쉬당 메모리 약 300 MB)")
+    p = add("check", cmd_check, "Fluent 실행 전 점검 (베이스 케이스, 메쉬, 저널, 경로, 디스크·시간 추정)")
+    p.add_argument("-j", "--jobs", type=int, help="시간 추정에 쓸 동시 실행 수 (기본: [project] max_parallel)")
     p = add("run", cmd_run, "배치 실행 (필요한 메쉬 자동 생성)")
     p.add_argument("--force", action="store_true", help="완료된 케이스도 다시 실행")
     p.add_argument("-j", "--jobs", type=int, help="동시 실행 케이스 수 (라이선스 수 고려)")
     p.add_argument("--all", action="store_true", help="스크리닝 결과 무시하고 전체 케이스 실행")
-    add("status", cmd_status, "진행 상태 확인")
+    p.add_argument("--priority", action="store_true",
+                   help="스크리닝 우선순위 순서로 실행 (스팟 체크 → 점수 높은 계열·형상 → 받음각)")
+    p.add_argument("--limit", type=int, metavar="N", help="남은 케이스 중 앞의 N개만 실행 (나눠서 돌릴 때)")
+    p = add("status", cmd_status, "진행 상태 확인 (완료된 케이스 실행 시간으로 남은 시간 추정)")
+    p.add_argument("-j", "--jobs", type=int, help="남은 시간 추정에 쓸 동시 실행 수 (기본: [project] max_parallel)")
     p = add("collect", cmd_collect, "결과 요약 CSV, 형상 순위, 그래프 생성")
     p.add_argument("--no-plots", action="store_true", help="그래프 없이 CSV만 (케이스가 수천 개일 때 빠름)")
+    p = add("gci", cmd_gci, "메쉬 독립성 확인: mesh_level 3단계 결과로 Richardson 외삽·GCI 계산")
+    p.add_argument("--quantity", nargs="+", metavar="Q", help="계산할 값 (기본: cl, cd와 요소별 cl-*, cd-*)")
+    p.add_argument("--no-plots", action="store_true", help="그래프 없이 CSV만")
     p = add("fetch-airfoils", cmd_fetch_airfoils, "UIUC 좌표 파일 내려받기 (없는 파일만)")
     p.add_argument("--zip", help="UIUC coord_seligFmt.zip 경로 (사이트 대신 압축 파일에서 꺼냄)")
     p.add_argument("--url", help="내려받을 주소 템플릿 (기본: UIUC, {name} = 파일 이름)")
@@ -398,6 +509,7 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_edge_cases)
 
     args = parser.parse_args(argv)
+    _safe_console()
     if args.command is None:  # 명령 없이 실행하면 배너 + 도움말
         if not args.no_banner:
             print_banner()

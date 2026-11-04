@@ -72,6 +72,39 @@ def test_fluent_msh_orientation(tmp_path):
             assert side(c1) < 0
 
 
+def test_orthogonal_quality_matches_fluent_definition(tmp_path):
+    from aero_automation.fluent_msh import orthogonal_quality
+
+    # 정사각형 2개: 모든 면에서 면 벡터와 (중심→면 중심), (중심→이웃 중심)이 나란함 → 1
+    nodes = np.array([[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]], float)
+    edges = [(0, 1), (1, 2), (2, 5), (5, 4), (4, 3), (3, 0)]
+    write_msh(tmp_path / "sq.msh", nodes, [(0, 1, 4, 3), (1, 2, 5, 4)], [Boundary("wall", "wall", edges)])
+    check = check_msh(tmp_path / "sq.msh")
+    assert check["min_orthogonal_quality"] == pytest.approx(1.0)
+    # 직각이등변삼각형 하나: 빗변은 1, 두 변은 cos = (1/3)/|(1/6, 1/3)| = 2/√5
+    tri = np.array([[0, 0], [1, 0], [0, 1]], float)
+    write_msh(tmp_path / "tri.msh", tri, [(0, 1, 2)], [Boundary("wall", "wall", [(0, 1), (1, 2), (2, 0)])])
+    data = read_msh(tmp_path / "tri.msh")
+    oq = orthogonal_quality(data["nodes"], data["faces"], 1)
+    assert oq[0] == pytest.approx(2 / 5**0.5)
+    # 심하게 찌그러진 사각형은 낮게 나온다
+    skew = np.array([[0, 0], [1, 0], [1.9, 0.2], [0.9, 0.2]], float)
+    write_msh(tmp_path / "sk.msh", skew, [(0, 1, 2, 3)], [Boundary("wall", "wall", [(0, 1), (1, 2), (2, 3), (3, 0)])])
+    assert check_msh(tmp_path / "sk.msh")["min_orthogonal_quality"] < 0.3
+
+
+def test_mesh_worker_uses_fresh_process_per_mesh():
+    # gmsh는 한 프로세스 안에서 앞서 만든 메쉬에 따라 같은 설정이어도 셀이 조금씩 달라진다 (지면 모드 실제 크기
+    # 메쉬에서 73,452 → 73,454 → 73,406). 형상마다 새 프로세스를 써야 순서·동시 개수·분담과 관계없이 재현된다.
+    import os
+
+    from aero_automation.meshing import MeshWorker
+
+    with MeshWorker() as w:
+        pids = [w._get_pool().apply(os.getpid) for _ in range(2)]
+    assert pids[0] != pids[1] and os.getpid() not in pids
+
+
 def test_unassigned_boundary_rejected(tmp_path):
     nodes = np.array([[0, 0], [1, 0], [0, 1]], float)
     with pytest.raises(ValueError, match="경계"):

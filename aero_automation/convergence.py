@@ -65,12 +65,17 @@ def coefficient_history(headers: list[str], rows: list[list[float]], angle_deg: 
     return None
 
 
-def solver_log_info(log_path: Path) -> dict:
-    """Fluent 콘솔 로그에서 마지막 잔차, 수렴 메시지, 발산 메시지를 읽는다."""
+def solver_log_info(*log_paths: Path) -> dict:
+    """Fluent 콘솔 로그(표준 출력 로그, transcript)에서 마지막 잔차, 수렴 메시지, 발산 메시지를 읽는다.
+
+    Windows에서 -hidden으로 실행하면 표준 출력에는 거의 아무것도 나오지 않으므로 저널의
+    /file/start-transcript 파일도 함께 읽는다. 없는 파일은 건너뛴다.
+    """
     info: dict = {}
-    if not log_path.is_file():
+    texts = [p.read_text(encoding="utf-8", errors="replace") for p in log_paths if p.is_file()]
+    if not texts:
         return info
-    text = log_path.read_text(encoding="utf-8", errors="replace")
+    text = "\n".join(texts)
     if _CONVERGED_PATTERN.search(text):
         info["solver_converged"] = True
     columns: list[str] | None = None
