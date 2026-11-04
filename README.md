@@ -104,8 +104,42 @@ Fluent를 돌리기 전에 할 수 있는 것은 `screen` → `mesh` → `check`
 | 4 | Fluent GUI | 베이스 케이스 `base_2el.cas.h5`, `base_3el.cas.h5` ([docs/FLUENT_BASE_CASE.md](docs/FLUENT_BASE_CASE.md), 잔차 기준 1e-6 포함) |
 | 5 | `run --only <파일럿>` | 2단·3단 파일럿 1개씩([아래](#파일럿-확인-순서)). `transcript.txt`, `convergence.png`, 이미지 확인 후 `check`로 실제 시간·디스크 재추정 |
 | 6 | `-c mesh_study.toml mesh/run/gci` | 메쉬 독립성 12 케이스 → 본 배치 메쉬의 GCI ([아래](#메쉬-독립성-확인-mesh_level-refine-gci)) |
-| 7 | `run --priority --limit 100` → `collect` | 스팟 체크부터. 스크리닝이 뺀 쪽이 CFD에서 더 좋다는 경고가 없는지 확인 |
-| 8 | `run --priority` | 나머지. `status`로 남은 시간 확인 |
+| 7 | `run --stage1 --priority` → `collect` | 1단계 172 케이스: 스팟 체크 + 계열·조건별 대표 형상의 전체 받음각. 스크리닝이 뺀 쪽이 CFD에서 더 좋다는 경고가 없는지 확인 |
+| 8 | `narrow-aoa` | 나머지 형상은 대표 형상의 CFD 최대 다운포스 각도 주변 3개만 남김 (3,484 → 1,828 케이스, [아래](#단계적-실행-run---stage1-narrow-aoa)) |
+| 9 | `run --priority` | 나머지. `status`로 남은 시간 확인 |
+
+### 단계적 실행 (`run --stage1`, `narrow-aoa`)
+
+받음각 6개를 모든 형상에 다 푸는 대신, 계열마다 대표 형상 하나로 다운포스가 최대인 받음각을 CFD로 찾고 나머지 형상은 그 주변만 풉니다.
+
+```bash
+aero-auto run --stage1 --priority
+```
+
+```bash
+aero-auto narrow-aoa --dry-run
+```
+
+```bash
+aero-auto narrow-aoa --keep 3
+```
+
+```bash
+aero-auto run --priority
+```
+
+- **1단계 (`run --stage1`):** 스팟 체크 + 그룹(남은 계열 × 조건(세트·속도))마다 스크리닝 점수 1위 형상(대표 형상)의 모든 받음각. `--per ground_clearance`를 주면 지상고 값마다 대표 형상을 따로 뽑습니다(지상고에 따라 최대 각도가 다를 때 더 안전).
+- **2단계 (`narrow-aoa`):** 그룹마다 대표 형상의 CFD 결과에서 `[results] objective`(예제: 최대 Cl = 최대 다운포스)가 최대인 받음각을 찾고, 같은 그룹의 나머지 형상은 그 받음각을 가운데로 한 `--keep`개(기본 3: 앞뒤 한 칸)만 남깁니다. 범위 끝이면 안쪽으로 밀어서 3개를 채우고, 실제 최대가 범위 밖일 수 있다고 경고합니다. 제외한 케이스는 `selection.json`의 제외 목록에 이유와 함께 들어가 이후 `run`이 건너뜁니다. 이미 끝난 케이스와 스팟 체크는 그대로 두고, 발산한 대표 케이스는 쓰지 않습니다. 대표 형상 결과가 3개 미만인 그룹은 줄이지 않습니다. `--dry-run`은 바꾸지 않고 결과만 보여줍니다. 그룹 변수는 기본으로 `run --stage1`에서 쓴 `--per`를 따릅니다.
+- `screen`을 다시 하면 `selection.json`이 새로 만들어지므로 `narrow-aoa`도 다시 실행합니다(끝난 1단계 결과는 그대로 씀).
+
+| 방식 | 1단계 | 총 케이스 (예제) |
+|---|---|---|
+| 줄이지 않음 | - | 3,484 |
+| `--keep 3` (기본) | 172 | 1,828 (-48%) |
+| `--keep 3`, `--per ground_clearance` | 604 | 2,044 (-41%) |
+| `--keep 2` | 172 | 1,276 (-63%, 최대점이 두 점 사이 어디인지 몰라 순위가 흔들릴 수 있음) |
+
+전제: 같은 계열 안에서는 메인 코드·갭·지상고가 달라도 최대 각도가 비슷하다는 것입니다. 지상고에 따라 다를 것 같으면 `--per ground_clearance`를 쓰세요.
 
 **`check` 점검 항목** (아무것도 만들거나 바꾸지 않음, 문제가 있으면 종료 코드 1)
 

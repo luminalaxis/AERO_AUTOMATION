@@ -302,13 +302,31 @@ aero-auto -c mesh_study.toml gci
 - 보통 메쉬의 GCI가 Cl 2%, Cd 5% 이내면 본 배치 설정 그대로 진행합니다. 넘으면 `project.toml`의 `[mesh] refine = 1.3` 처럼 전체를 조밀하게 하고 다시 확인합니다.
 - `convergence`가 `monotonic`이 아니면(진동·발산) 먼저 각 케이스의 반복 수렴(`conv_state`, `convergence.png`)을 확인하세요.
 
-## 18. 본 배치
+## 18. 본 배치 (단계적)
+
+**1단계:** 스팟 체크 + 계열·조건별 대표 형상의 전체 받음각 (예제 172 케이스)
 
 ```bat
-aero-auto run --priority --limit 100
+aero-auto run --stage1 --priority
+```
+```bat
+aero-auto collect
 ```
 
 - `--priority`: 스팟 체크(스크리닝이 뺀 쪽을 대표로 확인하는 케이스) → 점수 높은 계열·형상 → 받음각 순서로 실행합니다. 중간에 멈춰도 중요한 결과가 먼저 남습니다.
-- `--limit 100`: 남은 케이스 중 100개만. 끝나면 `aero-auto collect`로 스팟 체크 경고를 확인하고, 경고가 없으면 `--limit` 없이 나머지를 돌립니다.
-  경고가 나오면(제외된 형상이 CFD에서 더 좋음) `[screening] keep_within`을 늘리거나 `protect`에 그 변수를 넣고 `screen`부터 다시 합니다.
-- 진행 상황과 남은 시간: `aero-auto status`
+- `collect`에 스팟 체크 경고가 나오면(제외된 형상이 CFD에서 더 좋음) `[screening] keep_within`을 늘리거나 `protect`에 그 변수를 넣고 `screen`부터 다시 합니다.
+
+**2단계:** 대표 형상의 최대 다운포스 받음각 주변 3개만 남기고 나머지 실행 (예제 3,484 → 1,828 케이스)
+
+```bat
+aero-auto narrow-aoa --dry-run
+```
+```bat
+aero-auto narrow-aoa
+```
+```bat
+aero-auto run --priority
+```
+
+- `--dry-run`으로 그룹별 최대 각도와 남길 받음각을 먼저 봅니다. "범위 끝" 경고가 나오면 받음각 범위를 넓히는 것을 검토하세요.
+- 진행 상황과 남은 시간: `aero-auto status`. `--limit 100`으로 나눠 돌릴 수도 있습니다.

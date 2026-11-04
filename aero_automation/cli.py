@@ -4,7 +4,8 @@
     python -m aero_automation screen   # 저충실도 해석으로 민감도 확인 + 가망 없는 케이스 제외
     python -m aero_automation mesh     # 형상별 메쉬 생성 + 형상/메쉬 이미지
     python -m aero_automation check    # Fluent 실행 전 점검 (베이스 케이스, 메쉬, 저널, 경로, 디스크·시간)
-    python -m aero_automation run      # 배치 실행 (완료된 케이스는 건너뜀)
+    python -m aero_automation run      # 배치 실행 (완료된 케이스는 건너뜀, --stage1: 1단계만)
+    python -m aero_automation narrow-aoa  # 1단계 결과로 나머지 형상의 받음각을 최대 각도 주변만 남김
     python -m aero_automation status   # 케이스별 진행 상태
     python -m aero_automation collect  # 결과 요약 CSV, 순위, 그래프 생성
     python -m aero_automation gci      # 메쉬 독립성 확인 (mesh_level 3단계 → Richardson 외삽, GCI)
@@ -160,13 +161,53 @@ def _order_cases(cfg, cases, priority: bool, limit: int | None):
 
 def cmd_run(args) -> int:
     cfg, cases = _load(args)
-    cases = _order_cases(cfg, _apply_selection(cfg, cases, args.all), args.priority, args.limit)
+    cases = _apply_selection(cfg, cases, args.all)
+    if args.stage1:
+        from .staging import remember_per, stage1_cases
+
+        n_before = len(cases)
+        cases = stage1_cases(cfg, cases, args.per)
+        remember_per(cfg, args.per or [])
+        per = f", 대표 형상을 {', '.join(args.per)} 값마다" if args.per else ""
+        print(f"1단계: {n_before}개 중 {len(cases)}개 (스팟 체크 + 계열·조건별 대표 형상의 전체 받음각{per}). "
+              "끝나면 aero-auto narrow-aoa 로 나머지 형상의 받음각을 줄이세요.")
+    cases = _order_cases(cfg, cases, args.priority, args.limit)
     print(f"총 {len(cases)}개 케이스 실행 (동시 실행 {args.jobs or cfg.max_parallel}개)")
     results = run_all(cfg, cases, force=args.force, max_parallel=args.jobs)
     counts = Counter(r.state for r in results)
     print("\n결과: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
     _print_collect(collect(cfg, build_cases(cfg)), cfg)
     return 1 if counts.get("failed") else 0
+
+
+def cmd_narrow_aoa(args) -> int:
+    from .staging import narrow_aoa
+
+    cfg, cases = _load(args)
+    r = narrow_aoa(cfg, cases, keep=args.keep, per=args.per, dry_run=args.dry_run)
+    print(f"대표 형상의 CFD 최대 {r['metric']} 받음각 주변 {args.keep}개만 남깁니다 (그룹 = 계열 × 조건"
+          + (f" × {', '.join(args.per)}" if args.per else "") + ")\n")
+    edge, lacking = [], []
+    for g in r["groups"]:
+        if g["status"] != "줄임":
+            lacking.append(g)
+            continue
+        win = ", ".join(f"{v:g}" for v in g["window"])
+        print(f"  {g['group'][:90]:<90} 최대 {g['peak']:g}° ({r['metric']} {g['peak_value']:.3f}) → {win}°  제외 {g['removed']}개")
+        if g["edge"]:
+            edge.append(g)
+    if lacking:
+        print(f"\n[참고] 대표 형상 결과가 부족해 그대로 둔 그룹 {len(lacking)}개 (run --stage1 이 끝난 뒤 다시 실행):")
+        for g in lacking[:5]:
+            print(f"  {g['group'][:90]}  (끝난 받음각 {g['n_done']}/{g['n_aoa']}개)")
+    if edge:
+        print(f"\n[주의] 최대 각도가 받음각 범위 끝인 그룹 {len(edge)}개: 실제 최대는 범위 밖일 수 있습니다. "
+              "[cases.sweep] aoa 범위를 넓히는 것을 검토하세요.")
+    verb = "제외할" if r["dry_run"] else "제외한"
+    print(f"\n{verb} 케이스 {r['removed']}개: 남은 케이스 {r['kept_before']}개 → {r['kept_after']}개"
+          + ("  (--dry-run: selection.json은 그대로)" if r["dry_run"] else
+             "  (selection.json 갱신. 이어서 aero-auto run --priority)"))
+    return 0
 
 
 def cmd_mesh(args) -> int:
@@ -471,10 +512,19 @@ def main(argv=None) -> int:
     p.add_argument("--priority", action="store_true",
                    help="스크리닝 우선순위 순서로 실행 (스팟 체크 → 점수 높은 계열·형상 → 받음각)")
     p.add_argument("--limit", type=int, metavar="N", help="남은 케이스 중 앞의 N개만 실행 (나눠서 돌릴 때)")
+    p.add_argument("--stage1", action="store_true",
+                   help="1단계만: 스팟 체크 + 계열·조건별 대표 형상의 전체 받음각 (이후 narrow-aoa)")
+    p.add_argument("--per", nargs="+", metavar="VAR",
+                   help="--stage1 대표 형상을 이 변수 값마다 따로 (예: ground_clearance)")
     p = add("status", cmd_status, "진행 상태 확인 (완료된 케이스 실행 시간으로 남은 시간 추정)")
     p.add_argument("-j", "--jobs", type=int, help="남은 시간 추정에 쓸 동시 실행 수 (기본: [project] max_parallel)")
     p = add("collect", cmd_collect, "결과 요약 CSV, 형상 순위, 그래프 생성")
     p.add_argument("--no-plots", action="store_true", help="그래프 없이 CSV만 (케이스가 수천 개일 때 빠름)")
+    p = add("narrow-aoa", cmd_narrow_aoa, "1단계 결과로 나머지 형상의 받음각을 대표 형상 최대 각도 주변만 남김")
+    p.add_argument("--keep", type=int, default=3, help="남길 받음각 수 (기본 3: 최대 각도와 앞뒤 한 칸)")
+    p.add_argument("--per", nargs="+", metavar="VAR",
+                   help="그룹을 이 변수 값마다 따로 (기본: run --stage1 에서 쓴 값)")
+    p.add_argument("--dry-run", action="store_true", help="결과만 보여주고 selection.json은 바꾸지 않음")
     p = add("gci", cmd_gci, "메쉬 독립성 확인: mesh_level 3단계 결과로 Richardson 외삽·GCI 계산")
     p.add_argument("--quantity", nargs="+", metavar="Q", help="계산할 값 (기본: cl, cd와 요소별 cl-*, cd-*)")
     p.add_argument("--no-plots", action="store_true", help="그래프 없이 CSV만")
