@@ -36,3 +36,36 @@ def test_palette_colors_differ():
     ocean = build_banner(palette="ocean", width=120)
     assert sunset != ocean
     assert all(f"38;5;{c}m" in sunset for c in PALETTES["sunset"])
+
+
+def test_help_colors_only_on_terminal(capsys, monkeypatch):
+    import re
+
+    from aero_automation.console import colorize_help
+
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    assert main(["--no-banner"]) == 0
+    plain = capsys.readouterr().out
+    assert "\033[" not in plain  # 파이프·테스트에서는 색 없음
+
+    colored = colorize_help(plain, {"run", "check"})
+    assert re.sub(r"\033\[[0-9;]*m", "", colored) == plain  # 색만 넣고 글자·정렬은 그대로
+    assert "\033[1;93musage:" in colored and "\033[1;96moptions:" in colored
+    assert "\033[1;92mrun\033[0m" in colored and "\033[1;93m--no-clear" in colored
+    assert "\033[1;92maero-auto\033[0m" in colored
+
+
+def test_clear_screen_only_on_terminal(monkeypatch):
+    from aero_automation.console import clear_screen
+
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.delenv("AERO_AUTO_NO_CLEAR", raising=False)
+    assert clear_screen(io.StringIO()) is False
+    if __import__("os").name != "nt":
+        tty = Tty()
+        assert clear_screen(tty) is True and "\033[2J" in tty.getvalue()
+    monkeypatch.setenv("AERO_AUTO_NO_CLEAR", "1")
+    assert clear_screen(Tty()) is False
