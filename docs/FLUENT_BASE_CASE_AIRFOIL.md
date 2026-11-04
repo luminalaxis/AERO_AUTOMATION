@@ -31,10 +31,10 @@ Fluent Launcher: Dimension **2D**, **Double Precision**, Solver Processes 4, Wor
 
 | 경계 | 타입 | 위치 |
 |---|---|---|
-| `inlet` | velocity-inlet | 직사각형의 앞·위·아래 변 |
+| `inlet` | velocity-inlet | 직사각형의 앞 변 |
+| `top` | wall | 직사각형의 위 변 |
+| `bottom` | wall | 직사각형의 아래 변 |
 | `outlet` | pressure-outlet | 직사각형의 뒤 변 |
-
-위·아래 변도 `inlet`인 이유: 받음각을 inlet 속도 성분으로 주기 때문에 유동이 아래 변으로 들어와 위 변으로 나갑니다. 위·아래를 symmetry로 두면 유동을 수평으로 강제해 받음각이 제대로 들어가지 않습니다. 자유류 속도를 지정하는 velocity-inlet으로 두는 것이 일반적인 직사각형 영역 설정입니다.
 | `main` | wall | 익형 |
 | `interior-fluid` | interior | |
 
@@ -69,7 +69,6 @@ Density **constant 1.225**, Viscosity **constant 1.7894e-05** (마하수 0.03~0.
 ## 6. Boundary Conditions
 
 ### `inlet` (velocity-inlet)
-- 앞·위·아래 변이 모두 이 경계 하나라서 한 번만 설정하면 됩니다.
 - Velocity Specification Method: **Components**
 - X-Velocity: 입력란 오른쪽 드롭다운에서 expression → `speed * cos(alpha)`
 - Y-Velocity: expression → `speed * sin(alpha)`
@@ -77,6 +76,10 @@ Density **constant 1.225**, Viscosity **constant 1.7894e-05** (마하수 0.03~0.
 
 ### `outlet` (pressure-outlet)
 - Gauge Pressure 0, Backflow 난류 값은 inlet과 같게
+
+### `top`, `bottom` (wall)
+- 직사각형의 위·아래 변. Stationary Wall
+- 기본값(No Slip)이면 이 변을 따라 경계층이 생기므로, 바깥 경계로 쓸 때는 Shear Condition을 **Specified Shear**(x, y = 0, 미끄럼 벽)로 두는 것을 권장합니다.
 
 ### `main` (wall)
 - Stationary Wall, No Slip (기본값)
