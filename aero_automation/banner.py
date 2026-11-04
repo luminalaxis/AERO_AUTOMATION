@@ -1,4 +1,4 @@
-"""시작 배너: 큰 글씨 로고 + 지면 효과 날개 아스키 그림.
+"""시작 배너: 큰 글씨 로고. 실행할 때마다 색 조합이 바뀝니다.
 
 외부 라이브러리 없이 글꼴을 직접 들고 있습니다. 터미널(TTY)일 때만 보이고,
 파이프·리다이렉트·테스트에서는 출력하지 않습니다.
@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import random
 import shutil
 import sys
 
@@ -62,24 +63,19 @@ _FONT = {
     " ": ["  "] * 6,
 }
 
-# 뒤집힌 다요소 날개(메인 + 플랩) + 움직이는 바닥. 각 줄은 (색 이름, 문자열) 조각 목록.
-_WING = [
-    [("flow", "  ───▶                                                 "), ("wing", "▄▄██▀")],
-    [("flow", "  ───▶     "), ("wing", "▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄     ▄▄██▀▀")],
-    [("flow", "  ───▶   "), ("wing", "▄████████████████████████████████████▀▀  ▄██▀▀")],
-    [("flow", "  ───▶   "), ("wing", "▀███████████████████████████████▀▀▀     ▀▀")],
-    [("flow", "  ───▶     "), ("wing", "▀▀▀███████████████████▀▀▀▀")],
-    [("dim", "                ↓ ↓ ↓   downforce   ↓ ↓ ↓")],
-    [("ground", "  ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔")],
-    [("dim", "  ═══▶ ═══▶ ═══▶       moving ground       ═══▶ ═══▶ ═══▶")],
-]
-
 _TAGLINE = "2D 다요소 날개 · Fluent 배치 해석 자동화"
 
-# 큰 글씨 줄마다 위→아래로 바뀌는 색 (256색: 하늘색 → 파랑)
-_GRADIENT = [51, 45, 39, 33, 27, 21]
-_COLORS = {"flow": "38;5;81", "wing": "38;5;255", "ground": "38;5;244",
-           "dim": "38;5;244", "accent": "1;38;5;45"}
+# 큰 글씨 6줄의 위→아래 색 (256색 번호). 실행할 때마다 하나를 무작위로 고릅니다.
+PALETTES = {
+    "ocean":  [51, 45, 39, 33, 27, 21],      # 하늘색 → 파랑
+    "sunset": [226, 220, 214, 208, 202, 196],  # 노랑 → 빨강
+    "forest": [191, 155, 119, 83, 47, 35],   # 연두 → 초록
+    "neon":   [219, 213, 207, 201, 165, 129],  # 분홍 → 보라
+    "aurora": [87, 86, 85, 84, 120, 156],    # 청록 → 연두
+    "flame":  [229, 223, 217, 211, 205, 199],  # 살구 → 진분홍
+    "steel":  [255, 252, 249, 246, 243, 240],  # 흰색 → 회색
+}
+_DIM = "38;5;244"
 
 
 def render_text(text: str) -> list[str]:
@@ -95,7 +91,7 @@ def render_text(text: str) -> list[str]:
 def _supports_unicode(stream) -> bool:
     enc = getattr(stream, "encoding", None) or "ascii"
     try:
-        "█╗═▀▄▔▶↓·다".encode(enc)
+        "█╗═✈·다".encode(enc)
         return True
     except (UnicodeEncodeError, LookupError):
         return False
@@ -113,8 +109,10 @@ def _use_color(stream) -> bool:
     return True
 
 
-def build_banner(*, color: bool = True, unicode: bool = True, width: int = 80) -> str:
-    """배너 문자열. 폭이 좁거나 유니코드를 못 쓰면 한 줄짜리로 줄입니다."""
+def build_banner(*, color: bool = True, unicode: bool = True, width: int = 80,
+                 palette: str | None = None) -> str:
+    """배너 문자열. palette를 안 주면 PALETTES에서 무작위로 고릅니다.
+    폭이 좁거나 유니코드를 못 쓰면 한 줄짜리로 줄입니다."""
     def paint(code: str, s: str) -> str:
         return f"\033[{code}m{s}\033[0m" if color else s
 
@@ -122,18 +120,17 @@ def build_banner(*, color: bool = True, unicode: bool = True, width: int = 80) -
     if not unicode:
         return f"== AERO-AUTO {version} :: 2D multi-element wing / Fluent batch automation ==\n"
 
+    gradient = PALETTES[palette] if palette else random.choice(list(PALETTES.values()))
+    accent = f"1;38;5;{gradient[1]}"
     title = render_text("AERO-AUTO")
     if width < max(len(r) for r in title) + 2:
-        return paint(_COLORS["accent"], "✈ AERO-AUTO") + f" {version}  {paint(_COLORS['dim'], _TAGLINE)}\n"
+        return paint(accent, "✈ AERO-AUTO") + f" {version}  {paint(_DIM, _TAGLINE)}\n"
 
     lines = [""]
-    for row, c in zip(title, _GRADIENT):
+    for row, c in zip(title, gradient):
         lines.append(" " + paint(f"1;38;5;{c}", row))
     lines.append("")
-    for parts in _WING:
-        lines.append("".join(paint(_COLORS[k], s) for k, s in parts).rstrip())
-    lines.append("")
-    lines.append("  " + paint(_COLORS["accent"], _TAGLINE) + "  " + paint(_COLORS["dim"], version))
+    lines.append("  " + paint(accent, _TAGLINE) + "  " + paint(_DIM, version))
     lines.append("")
     return "\n".join(lines) + "\n"
 
