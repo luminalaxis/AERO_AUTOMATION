@@ -1,6 +1,6 @@
 import io
 
-from aero_automation.banner import build_banner, print_banner, render_text
+from aero_automation.banner import PALETTES, build_banner, print_banner, render_text
 from aero_automation.cli import main
 
 
@@ -12,7 +12,8 @@ def test_render_text_has_six_rows():
 
 def test_banner_variants():
     full = build_banner(color=False, width=120)
-    assert "moving ground" in full and "\033[" not in full
+    assert "█" in full and "\033[" not in full
+    assert "moving ground" not in full                                   # 날개 그림 없음
     assert "\033[" in build_banner(color=True, width=120)
     assert len(build_banner(color=False, width=40).splitlines()) == 1   # 좁은 터미널
     assert build_banner(unicode=False).isascii()                         # cp949 등
@@ -28,3 +29,10 @@ def test_banner_skipped_when_not_tty(monkeypatch):
 def test_no_command_prints_help(capsys):
     assert main([]) == 0
     assert "usage: aero-auto" in capsys.readouterr().out
+
+
+def test_palette_colors_differ():
+    sunset = build_banner(palette="sunset", width=120)
+    ocean = build_banner(palette="ocean", width=120)
+    assert sunset != ocean
+    assert all(f"38;5;{c}m" in sunset for c in PALETTES["sunset"])
