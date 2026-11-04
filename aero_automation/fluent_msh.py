@@ -169,11 +169,51 @@ def check_msh(path: Path) -> dict:
         elif c0 == 0:
             raise ValueError("c0가 0인 면이 있습니다.")
     area, count = area[1:], count[1:]
+    oq = orthogonal_quality(nodes, faces, n_cells) if not (area <= 0).any() else np.zeros(n_cells)
     return {
         "cells": n_cells,
         "min_area": float(area.min()),
         "total_area": float(area.sum()),
         "bad_cells": int((area <= 0).sum()),
         "open_cells": int((count < 3).sum()),
+        "min_orthogonal_quality": float(oq.min()),
+        "cells_oq_below_0.1": int((oq < 0.1).sum()),
         "names": data["names"],
     }
+
+
+def orthogonal_quality(nodes: np.ndarray, faces: list, n_cells: int) -> np.ndarray:
+    """셀별 직교 품질 (Fluent Mesh > Quality의 Orthogonal Quality와 같은 정의, 0~1, 1이 최고).
+
+    셀의 면마다 바깥 방향 면 벡터 A와 (셀 중심 → 면 중심) f, (셀 중심 → 이웃 셀 중심) c 사이의
+    cos 값 A·f/(|A||f|), A·c/(|A||c|) 중 가장 작은 값. Fluent는 0.01 미만이면 오류, 0.1 미만은 주의를 권한다.
+    """
+    f = np.asarray([fc[:4] for fc in faces], dtype=np.int64)
+    n0, n1, c0, c1 = f[:, 0] - 1, f[:, 1] - 1, f[:, 2], f[:, 3]
+    p0, p1 = nodes[n0], nodes[n1]
+    cross = p0[:, 0] * p1[:, 1] - p1[:, 0] * p0[:, 1]
+    # 셀 면적·도심 (c0는 면 n0→n1의 왼쪽, c1은 오른쪽)
+    area = np.zeros(n_cells + 1)
+    cx = np.zeros(n_cells + 1)
+    cy = np.zeros(n_cells + 1)
+    for cell, sign in ((c0, 1.0), (c1, -1.0)):
+        np.add.at(area, cell, sign * 0.5 * cross)
+        np.add.at(cx, cell, sign * (p0[:, 0] + p1[:, 0]) * cross / 6)
+        np.add.at(cy, cell, sign * (p0[:, 1] + p1[:, 1]) * cross / 6)
+    area[0] = 1.0
+    cen = np.column_stack([cx / area, cy / area])
+    d = p1 - p0
+    a0 = np.column_stack([d[:, 1], -d[:, 0]])  # c0 바깥 방향 (오른쪽)
+    fmid = 0.5 * (p0 + p1)
+
+    def cos(a, b):
+        return (a * b).sum(1) / np.maximum(np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1), 1e-300)
+
+    oq = np.ones(n_cells + 1)
+    np.minimum.at(oq, c0, cos(a0, fmid - cen[c0]))
+    inner = c1 > 0
+    np.minimum.at(oq, c1[inner], cos(-a0[inner], fmid[inner] - cen[c1[inner]]))
+    cc = cos(a0[inner], cen[c1[inner]] - cen[c0[inner]])
+    np.minimum.at(oq, c0[inner], cc)
+    np.minimum.at(oq, c1[inner], cc)
+    return np.clip(oq[1:], 0.0, 1.0)

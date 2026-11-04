@@ -1,0 +1,96 @@
+# 메쉬 독립성 확인 (파일럿 실행 다음, 본 배치 전에 한 번)
+#   같은 케이스를 메쉬 3단계(1 = 성김, 2 = 보통 = 본 배치 설정, 3 = 조밀)로 풀어서 Cl, Cd가 메쉬에 따라
+#   얼마나 바뀌는지 보고, 본 배치 메쉬(2단계)의 이산화 불확실성(GCI)을 구합니다.
+#
+#   aero-auto -c mesh_study.toml mesh     메쉬 12개 (단계마다 셀 크기 1.5배 차이 → 셀 수 약 2.2배:
+#                                          성김 3.3만~4.9만, 보통 7.3만~10.9만, 조밀 16만~24만 셀, 4코어 약 2분)
+#   aero-auto -c mesh_study.toml run      Fluent 12 케이스 (베이스 케이스·저널은 본 배치와 같은 것)
+#   aero-auto -c mesh_study.toml gci      → runs_mesh/mesh_study/gci.csv, gci_*.png
+#
+#   형상: 스크리닝에서 남은 계열 중 메인 375 mm 형상 (2단 1개, 3단 1개)
+#   조건: 가장 까다로운 지상고 30 mm, 최고 속도 100 km/h (최고 Re), 받음각 4°·12°
+#   판단 기준 예: 보통 메쉬의 GCI가 Cl 2%, Cd 5% 이내면 본 배치 설정 그대로 진행
+
+[project]
+name = "flap_mesh_study"
+template = "journal.jou"       # 본 배치와 같은 저널
+output_dir = "runs_mesh"
+max_parallel = 1
+
+[solver]
+kind = "fluent"
+# executable = 'C:\Program Files\ANSYS Inc\v261\fluent\ntbin\win64\fluent.exe'
+mode = "2ddp"
+processes = 4
+graphics = true
+timeout_minutes = 120          # 조밀 메쉬는 셀이 약 2.2배라 오래 걸림
+
+[constants]
+downforce = true
+ground_ref = "lowest"
+iterations = 3000              # 조밀 메쉬는 수렴이 느려서 본 배치(2000)보다 길게
+main_airfoil = "4412"
+main_chord = 375
+ground_clearance = 30
+speed_kmh = 100
+
+[cases]
+group = "mesh_{case_set}_a{aoa}"
+
+[cases.sweep]
+mesh_level = [1, 2, 3]         # 1 = 성김, 2 = 보통(본 배치와 같은 메쉬), 3 = 조밀
+aoa = [4, 12]
+
+[[cases.set]]
+label = "2el"
+name = "2el_{main_airfoil}c{main_chord}_f{flap1_chord}d{flap1_deflection}g{flap1_gap}_h{ground_clearance}_v{speed_kmh}_a{aoa}_m{mesh_level}"
+
+[cases.set.constants]
+base_case = "base_2el.cas.h5"
+flap1_airfoil = "4412"
+flap1_chord = 150
+flap1_deflection = 30
+flap1_gap = 6
+flap1_overlap = 5
+
+[[cases.set]]
+label = "3el"
+name = "3el_{main_airfoil}c{main_chord}_f{flap1_chord}d{flap1_deflection}_f{flap2_chord}d{flap2_deflection}g{flap2_gap}_h{ground_clearance}_v{speed_kmh}_a{aoa}_m{mesh_level}"
+
+[cases.set.constants]
+base_case = "base_3el.cas.h5"
+flap1_airfoil = "4412"
+flap1_chord = 150
+flap1_deflection = 25
+flap1_gap = 6
+flap1_overlap = 5
+flap2_airfoil = "4412"
+flap2_chord = 150
+flap2_deflection = 45
+flap2_gap = 5
+flap2_overlap = 3
+
+[derived]
+chord = "main_chord / 1000"
+velocity = "speed_kmh / 3.6"
+mach = "velocity / 340.29"
+reynolds = "1.225 * velocity * chord / 1.7894e-5"
+# 메쉬 단계 → [mesh] refine (모든 셀 크기·첫 셀 높이 ÷refine, 표면 셀 수 ×refine, 경계층 성장률^(1/refine),
+#   슬롯·지면 통로·뒷전 세분화도 같은 비율). 단계 사이 비율 1.5 (Celik 권장 1.3 이상)
+refine = "1.5 ** (mesh_level - 2)"
+
+[mesh]                         # 본 배치(project.toml)와 같은 설정이어야 2단계가 본 배치 메쉬와 같아짐
+y_plus = 1.0
+growth_rate = 1.15
+surface_cells = 200
+flap_surface_cells = 150
+ground_upstream = 5
+ground_downstream = 12
+ground_height = 6
+
+[results]
+report_files = ["*.out"]
+average_last = 100
+x_param = "aoa"
+wind_axes = true
+objective = "max_cl"

@@ -132,12 +132,22 @@ def _attach_meshes(cases: list[Case], cfg: ProjectConfig) -> None:
         if "reynolds" in c.params and "main_airfoil" in c.params:
             key = mesh_name(c.params)
             max_re[key] = max(max_re.get(key, 0.0), float(c.params["reynolds"]))
+    first: dict[str, Case] = {}
     for c in cases:
         params = c.params
         if "reynolds" in params and "main_airfoil" in params:
             key = mesh_name(params)
             params = {**params, "reynolds": max_re[key]}
         c.mesh = make_job(params, cfg.mesh, meshes_dir)
+        # 이름이 같은 메쉬는 한 번만 만들어 공유하므로, 이름이 같은데 형상이나 메쉬 설정이 다르면
+        # 엉뚱한 메쉬로 계산된다 (예: 케이스 변수로 surface_cells 등을 바꾸면서 mesh_level을 안 준 경우)
+        other = first.setdefault(c.mesh.name, c)
+        if other is not c and (other.mesh.settings != c.mesh.settings
+                               or other.mesh.geometry_params != c.mesh.geometry_params):
+            raise ConfigError(
+                f"메쉬 이름 {c.mesh.name}이 같은데 형상이나 메쉬 설정이 다른 케이스가 있습니다 "
+                f"({other.name}, {c.name}). 케이스마다 [mesh] 항목(refine, surface_cells 등)을 바꾸려면 "
+                "케이스 변수 mesh_level로 메쉬를 구분하세요.")
 
 
 def filter_cases(cases: list[Case], patterns: list[str] | None) -> list[Case]:

@@ -22,6 +22,12 @@ from .template import render
 IS_WINDOWS = os.name == "nt"
 JOURNAL_NAME = "run.jou"
 LOG_NAME = "solver.log"
+# 저널의 /file/start-transcript 파일. Windows에서 -hidden으로 실행하면 Fluent 콘솔 출력이 표준 출력으로
+# 나오지 않아서, 오류·발산·잔차는 이 파일에서 읽는다.
+TRANSCRIPT_NAME = "transcript.txt"
+# 다시 실행할 때 지우는 이전 결과 (Fluent가 덮어쓰기 확인을 물으면 배치 저널이 꼬이거나 멈춘다)
+STALE_OUTPUTS = ("*.png", TRANSCRIPT_NAME, "*.cas.h5", "*.dat.h5", "*.cas.gz", "*.dat.gz")
+MESH_WORKERS_DEFAULT_MAX = 8  # mesh -j 를 주지 않았을 때 동시에 만들 메쉬 수의 상한 (메모리 고려)
 STATUS_NAME = "status.json"
 PARAMS_NAME = "case.json"
 
@@ -53,26 +59,73 @@ def case_variables(cfg: ProjectConfig, case: Case) -> dict:
     return variables
 
 
-def ensure_meshes(cfg: ProjectConfig, cases: list[Case], force: bool = False) -> dict[str, str]:
-    """케이스에 필요한 메쉬를 생성한다 (같은 형상은 한 번만). 반환: {메쉬 이름: 오류 메시지}."""
-    from .meshing import MeshWorker, generate_mesh
+def ensure_meshes(cfg: ProjectConfig, cases: list[Case], force: bool = False,
+                  workers: int | None = None) -> dict[str, str]:
+    """케이스에 필요한 메쉬를 생성한다 (같은 형상은 한 번만). 반환: {메쉬 이름: 오류 메시지}.
+
+    workers개 작업 프로세스로 동시에 만든다 (기본: CPU 코어 수, 최대 MESH_WORKERS_DEFAULT_MAX개. 프로세스당
+    메모리 약 300 MB). 형상마다 시간 제한([mesh] timeout)이
+    적용되고, 실패하거나 시간을 넘긴 형상만 실패 처리한 뒤 나머지를 계속 만든다.
+    """
+    from .meshing import MeshWorker, generate_mesh, single_thread_blas
 
     jobs = {c.mesh.name: c.mesh for c in cases if c.mesh is not None}
     todo = [j for j in jobs.values() if force or not j.is_current()]
-    if jobs:
-        log(f"메쉬: 형상 {len(jobs)}개 중 {len(todo)}개 생성 필요")
-    errors = {}
-    with MeshWorker() as worker:
-        for i, job in enumerate(todo, start=1):
-            start = time.monotonic()
-            try:
-                info = generate_mesh(job, cfg.root, worker=worker)
-            except ConfigError as exc:
-                errors[job.name] = str(exc)
-                log(f"  [{i}/{len(todo)}] {job.name:<45} 실패 - {exc}")
-                continue
-            log(f"  [{i}/{len(todo)}] {job.name:<45} {info['cells']:>8,} cells  "
-                f"품질 {info['min_quality']:.2f}  {time.monotonic() - start:4.1f}s")
+    errors: dict[str, str] = {}
+    if not jobs:
+        return errors
+    n = max(1, min(workers or min(os.cpu_count() or 1, MESH_WORKERS_DEFAULT_MAX), len(todo) or 1))
+    log(f"메쉬: 형상 {len(jobs)}개 중 {len(todo)}개 생성 필요"
+        + (f" (동시 {n}개)" if len(todo) > 1 and n > 1 else ""))
+    if not todo:
+        return errors
+
+    local = threading.local()
+    mesh_workers: list[MeshWorker] = []
+    lock = threading.Lock()
+    stop = threading.Event()
+
+    def build(job):
+        # 스레드마다 작업 프로세스 하나를 계속 쓴다 (gmsh는 프로세스 안에서 동시에 두 개를 돌릴 수 없음)
+        worker = getattr(local, "worker", None)
+        if worker is None:
+            worker = local.worker = MeshWorker()
+            with lock:
+                mesh_workers.append(worker)
+        start = time.monotonic()
+        try:
+            info = generate_mesh(job, cfg.root, worker=worker, stop=stop)
+            return job, info, None, time.monotonic() - start
+        except ConfigError as exc:
+            return job, None, str(exc), time.monotonic() - start
+
+    started = time.monotonic()
+    pool = ThreadPoolExecutor(max_workers=n)
+    try:
+        with single_thread_blas():
+            futures = [pool.submit(build, job) for job in todo]
+            for i, fut in enumerate(as_completed(futures), start=1):
+                job, info, err, dt = fut.result()
+                if err is not None:
+                    errors[job.name] = err
+                    log(f"  [{i}/{len(todo)}] {job.name:<45} 실패 - {err}")
+                else:
+                    oq = info.get("min_orthogonal_quality")
+                    log(f"  [{i}/{len(todo)}] {job.name:<45} {info['cells']:>8,} cells  "
+                        f"품질 {info['min_quality']:.2f}" + (f"  직교 {oq:.2f}" if oq is not None else "")
+                        + f"  {dt:4.1f}s")
+    except BaseException:
+        # Ctrl+C 등: 남은 형상은 취소하고, 만드는 중인 작업 프로세스는 바로 끝낸다
+        stop.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        for w in mesh_workers:
+            w.close(kill=True)
+        raise
+    pool.shutdown(wait=True)
+    for w in mesh_workers:
+        w.close()
+    total = time.monotonic() - started
+    log(f"메쉬 {len(todo) - len(errors)}개 생성, 실패 {len(errors)}개 ({total / 60:.1f}분)")
     return errors
 
 
@@ -172,14 +225,35 @@ def _kill_tree(proc: subprocess.Popen) -> None:
             pass
 
 
-def _scan_errors(log_path: Path, patterns: list[str]) -> str | None:
-    if not log_path.is_file() or not patterns:
+# transcript에 다시 찍힌 저널 주석 줄 (앞에 "> " 나 "/file> " 같은 TUI 프롬프트가 붙을 수 있음)
+_ECHOED_COMMENT = re.compile(r"^\s*(?:[\w/.-]*>\s*)*;")
+
+
+def _scan_errors(log_paths: list[Path], patterns: list[str]) -> str | None:
+    """로그 파일들(표준 출력 로그, Fluent transcript)에서 처음 나오는 오류 줄. 저널 주석 줄은 건너뛴다."""
+    if not patterns:
         return None
-    text = log_path.read_text(encoding="utf-8", errors="replace")
-    for line in text.splitlines():
-        for pattern in patterns:
-            if pattern.lower() in line.lower():
-                return line.strip()
+    for log_path in log_paths:
+        if not log_path.is_file():
+            continue
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        for line in text.splitlines():
+            if _ECHOED_COMMENT.match(line):
+                continue
+            for pattern in patterns:
+                if pattern.lower() in line.lower():
+                    return line.strip()
+    return None
+
+
+def _remove_stale_outputs(cfg: ProjectConfig, case: Case) -> str | None:
+    """이전 실행 결과를 지운다. 지우지 못한 파일이 있으면(다른 프로그램이 열고 있음 등) 그 메시지."""
+    for pattern in [*cfg.results.report_files, *STALE_OUTPUTS]:
+        for old in case.dir.glob(pattern):
+            try:
+                old.unlink()
+            except OSError as exc:
+                return f"이전 결과 파일을 지울 수 없습니다 ({old.name}: {exc}). 파일을 연 프로그램을 닫으세요."
     return None
 
 
@@ -206,10 +280,12 @@ def run_case(cfg: ProjectConfig, case: Case, template_text: str | None = None,
         _write_status(case, state="failed", message=msg)
         return RunResult(case, "failed", msg)
 
-    # 이전 실행 결과 정리 (Fluent가 기존 파일 덮어쓰기 확인을 물으면 배치가 멈춤)
-    for pattern in [*cfg.results.report_files, "*.png"]:
-        for old in case.dir.glob(pattern):
-            old.unlink()
+    # 이전 실행 결과 정리 (리포트, 이미지, transcript, result.cas.h5 등). Fluent가 기존 파일 덮어쓰기 확인을
+    # 물으면 그다음 저널 줄이 답으로 읽혀 배치가 꼬이거나 멈춘다.
+    case.dir.mkdir(parents=True, exist_ok=True)
+    if msg := _remove_stale_outputs(cfg, case):
+        _write_status(case, state="failed", message=msg)
+        return RunResult(case, "failed", msg)
     prepare_case(cfg, case, template_text)
     cmd = build_command(cfg, case)
     log_path = case.dir / LOG_NAME
@@ -242,7 +318,7 @@ def run_case(cfg: ProjectConfig, case: Case, template_text: str | None = None,
     elapsed = time.monotonic() - start
     if returncode != 0:
         state, msg = "failed", f"종료 코드 {returncode}"
-    elif err := _scan_errors(log_path, cfg.results.error_patterns):
+    elif err := _scan_errors([log_path, case.dir / TRANSCRIPT_NAME], cfg.results.error_patterns):
         state, msg = "failed", f"로그 오류: {err}"
     else:
         state, msg = "done", ""

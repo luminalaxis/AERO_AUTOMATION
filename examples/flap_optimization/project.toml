@@ -87,6 +87,7 @@ flap_surface_cells = 150     # 플랩마다 윗면/아랫면 각각
 ground_upstream = 5          # 메인 앞전 ~ inlet [메인 코드]
 ground_downstream = 12       # 메인 앞전 ~ outlet [메인 코드]
 ground_height = 6            # 지면 ~ 위쪽 경계 [메인 코드]
+# refine = 1.0               # 메쉬 전체 세분화 비율. mesh_study.toml(메쉬 독립성 확인)에서 GCI가 크면 1.3 등으로
 
 [screening]                  # CFD 전 저충실도 선별 (aero-auto screen), 속도별로 따로 선별
 transition = "free"          # Re 수십만은 천이 영향이 커서 자연 천이로 추정 (Fluent는 Transition SST 권장)
@@ -99,6 +100,8 @@ aoa_step = 2.0               # 실속각 탐색 간격 [deg] (지면 모드는 �
 keep_top = 3                 # 점수 상위 3개 계열은 항상 유지
 keep_within = 0.05           # 최고 계열 대비 5% 이내면 유지
 spot_check = 1               # 제외된 계열 중 최상위 1개는 대표 케이스만 CFD로 검증
+spot_check_values = true     # 남은 계열에 없는 값(예: 플랩 각도 20°, 코드 80 mm)도 그 값의 최고 계열을 대표 케이스만 검증
+                             #  (저충실도 점수가 큰 각도·큰 플랩 쪽으로만 몰리는 것 대비. run --priority 가 먼저 실행)
 aoa_margin = 2.0             # 추정 실속각 + 2° 까지 해석 (넘는 첫 받음각 1개는 유지)
 prune_aoa = false            # 받음각 선별 끔: 지면 모드에서는 비점성 해석이 지면 근처 흡입을 과대평가해
                              # 실속각을 너무 낮게(2~4°) 추정함 → 받음각은 CFD 결과로 판단

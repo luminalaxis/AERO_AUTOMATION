@@ -9,6 +9,12 @@
 ;  GUI에서 File > Write > Start Journal 로 녹화해 비교해 보세요.
 ; ============================================================
 
+; Fluent 콘솔 출력을 케이스 폴더의 transcript.txt 에 남깁니다 (맨 앞에 두세요).
+; Windows에서 -hidden 으로 실행하면 콘솔 출력이 도구로 전달되지 않아서, 도구가 이 파일에서
+; 오류·발산 메시지, 마지막 잔차, 수렴 메시지를 읽습니다. (주석에 오류 검사 문구를 쓰면 transcript에
+;  주석이 찍힐 때 오류로 잡히므로, 저널 주석에는 그 영어 문구를 쓰지 마세요)
+/file/start-transcript "transcript.txt"
+
 /file/read-case "${project_dir}/${base_case}"
 
 ; 형상별 메쉬로 교체 (경계 이름 main / inlet / outlet 이 같아서 설정이 유지됨)
@@ -35,4 +41,5 @@
 ; 경계 사례 분석용으로 필요한 케이스만 아래 줄의 주석(;)을 풀고 --only 로 다시 돌리세요.
 ; /file/write-case-data "result.cas.h5"
 
+/file/stop-transcript
 /exit yes

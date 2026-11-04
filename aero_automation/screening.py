@@ -30,10 +30,9 @@ from .cases import Case
 from .config import ConfigError, ProjectConfig, safe_name
 from .geometry import build_geometry
 from .geometry import geometry_params
-from .meshing import mesh_name
+from .meshing import mesh_name, single_thread_blas
 from .panel import analyze, solve_inviscid
 
-_BLAS_THREAD_VARS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
 SCREEN_DIR = "screening"
 SELECTION_FILE = "selection.json"
 
@@ -48,6 +47,8 @@ class ScreeningConfig:
     keep_top: int = 3               # 점수 상위 N개 계열은 항상 유지
     keep_within: float = 0.05       # 최고 계열 대비 이 비율 이내면 유지
     spot_check: int = 1             # 제외된 계열 중 상위 N개는 대표 케이스만 CFD로 검증
+    spot_check_values: bool = True  # 남은 계열에 없는 변수 값(예: 플랩 각도 20°)마다 그 값의 최고 계열도 대표 케이스만 검증
+    flap_sep_warn: float = 0.3      # 남은 형상의 추정 플랩 박리 비율 중앙값이 이보다 크면 경고
     prune_aoa: bool = True
     sep_limit: float = 0.10         # 메인익 윗면 박리 구간 비율이 이 값을 넘으면 실속으로 판정
     aoa_margin: float = 2.0         # 추정 실속각 + 이 값까지는 해석
@@ -205,21 +206,13 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
     if workers > 1 and len(args) > 1:
         # 작업 프로세스마다 행렬 계산(BLAS) 스레드를 1개로 제한: 그대로 두면 프로세스 수 × 코어 수만큼
         # 스레드가 경합해 수십 배 느려진다. spawn으로 새로 띄워야 환경변수가 numpy 로드 전에 적용된다.
-        saved = {k: os.environ.get(k) for k in _BLAS_THREAD_VARS}
-        os.environ.update({k: "1" for k in _BLAS_THREAD_VARS})
-        try:
-            with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn")) as pool:
-                for fut in as_completed([pool.submit(_evaluate_task, *a) for a in args]):
-                    results.update(fut.result())
-                    done += 1
-                    if done % 25 == 0 or done == len(args):
-                        log(f"  저충실도 해석 {done}/{len(args)} 형상 ({workers}개 프로세스)")
-        finally:
-            for k, v in saved.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
+        with single_thread_blas(), ProcessPoolExecutor(max_workers=workers,
+                                                       mp_context=mp.get_context("spawn")) as pool:
+            for fut in as_completed([pool.submit(_evaluate_task, *a) for a in args]):
+                results.update(fut.result())
+                done += 1
+                if done % 25 == 0 or done == len(args):
+                    log(f"  저충실도 해석 {done}/{len(args)} 형상 ({workers}개 프로세스)")
     else:
         for a in args:
             results.update(_evaluate_task(*a))
@@ -269,7 +262,20 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
                 g["reason"] = (f"[{condition_label(cond)}] 계열 {score_key} {families[g['family']]:.3g} "
                                f"< 기준 {threshold:.3g} (상위 {sc.keep_top}개 밖)")
         # 스팟 체크: 제외된 계열 중 상위 계열의 최고 형상, 추정 최적 받음각 근처 케이스만 유지
-        for fam in [f for f, _ in ranked if f not in keep_family][: sc.spot_check]:
+        spot_fams = [f for f, _ in ranked if f not in keep_family][: sc.spot_check]
+        if sc.spot_check_values:
+            # 저충실도 점수가 한쪽 끝 값(예: 가장 큰 플랩 각도)에만 몰리면 반대쪽 값은 CFD로 한 번도 확인하지
+            # 못한다. 남은 계열에 없는 변수 값마다 그 값을 가진 최고 계열을 스팟 체크에 넣는다.
+            fam_values = {}
+            for g in cg:
+                if g["feasible"]:
+                    fam_values.setdefault(g["family"], {(k, repr(g.get(k))) for k in family_keys})
+            covered = set().union(*(fam_values[f] for f in keep_family | set(spot_fams) if f in fam_values))
+            for fam, _ in ranked:
+                if fam not in keep_family and fam not in spot_fams and fam_values[fam] - covered:
+                    spot_fams.append(fam)
+                    covered |= fam_values[fam]
+        for fam in spot_fams:
             g = max((g for g in cg if g["feasible"] and g["family"] == fam), key=lambda g: g[score_key])
             alphas = sorted({float(c.params[x_param]) for c in g["_cases"]})
             targets = {g[f"{x_param}@ld_max_est"], g[f"{x_param}@cl_max_est"]}
@@ -313,6 +319,8 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
             else:
                 pruned[c.name] = reason
 
+    warnings = _flap_separation_warnings(geoms, conditions, sc)
+
     out = cfg.output_dir / SCREEN_DIR
     if out.is_dir():
         shutil.rmtree(out)  # 이전 스크리닝의 조건별 그래프 폴더가 섞이지 않도록
@@ -321,8 +329,17 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
     public.sort(key=lambda g: (g["condition"], not g["feasible"], -(g.get(score_key) or -math.inf)))
     _write_csv(out / "geometries.csv", public)
     _write_csv(out / "cases.csv", case_rows)
+    # 실행 우선순위 (run --priority): 스팟 체크 → 계열 순위 → 형상 점수 → 받음각. 배치를 중간에 멈춰도
+    # 스크리닝 검증 결과와 유망한 형상의 받음각 스윕이 먼저 남는다.
+    order: dict[str, tuple] = {}
+    for g in geoms:
+        for c in g["_cases"]:
+            order[c.name] = (0 if c.name in spot_cases else 1, g.get("family_rank", 10**6),
+                             -(g.get(score_key) or 0.0), float(c.params[x_param]))
+    priority = sorted(kept, key=lambda n: order.get(n, (2,)))
     selection = {"all_cases": [c.name for c in cases], "kept": kept, "pruned": pruned,
-                 "spot_check": spot, "metric": score_key, "split_by": split_by, "settings": asdict(sc)}
+                 "spot_check": spot, "priority": priority, "metric": score_key, "split_by": split_by,
+                 "settings": asdict(sc)}
     (out / SELECTION_FILE).write_text(json.dumps(selection, ensure_ascii=False, indent=1), encoding="utf-8")
 
     from .plots import plot_screening
@@ -332,7 +349,26 @@ def screen(cfg: ProjectConfig, cases: list[Case], log=print) -> dict:
         plots += plot_screening([g for g in geoms if g["_cond"] == cond], varying, score_key, x_param,
                                 sc.protect, sub, title=condition_label(cond) if cond else "")
     return {"dir": out, "geometries": public, "kept": kept, "pruned": pruned, "plots": plots,
-            "score_key": score_key, "conditions": summary, "spot_check": spot}
+            "score_key": score_key, "conditions": summary, "spot_check": spot, "warnings": warnings}
+
+
+def _flap_separation_warnings(geoms: list[dict], conditions: list, sc: ScreeningConfig) -> list[str]:
+    """남은 형상의 플랩 흡입면 박리 추정이 크면 경고 (조건별 값을 한 메시지로). 선별 점수(비점성 Cl)는
+    박리로 인한 양력 손실을 반영하지 않아서, 박리가 큰 형상(큰 플랩 각도 등)이 실제보다 좋게 평가된다."""
+    parts = []
+    for cond in conditions:
+        cg = [g for g in geoms if g["_cond"] == cond and g["feasible"] and g.get("flap_sep_est")]
+        kept = [g["flap_sep_est"] for g in cg if g["keep"]]
+        other = [g["flap_sep_est"] for g in cg if not g["keep"]]
+        if kept and float(np.median(kept)) > sc.flap_sep_warn:
+            parts.append(f"[{condition_label(cond)}] {np.median(kept):.0%}"
+                         + (f" (제외 {np.median(other):.0%})" if other else ""))
+    if not parts:
+        return []
+    return [f"남은 형상의 플랩 박리 추정 중앙값이 {sc.flap_sep_warn:.0%}를 넘습니다: " + ", ".join(parts)
+            + ". 선별 점수(비점성 Cl)는 박리로 인한 양력 손실을 반영하지 않아 플랩 각도가 큰 형상이 유리하게 나옵니다. "
+            "run --priority 로 스팟 체크 케이스를 먼저 CFD로 돌려 collect 경고를 확인하고, 필요하면 [screening] protect에 "
+            "\"*deflection\"을 넣어 각도를 CFD로 비교하세요."]
 
 
 def check_spot(selection: dict, ranking: list[dict]) -> list[str]:

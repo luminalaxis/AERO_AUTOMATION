@@ -8,6 +8,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
@@ -55,6 +58,8 @@ class MeshSettings:
     ground_height: float = 6.0       # 지면 ~ 위쪽 경계(symmetry) 높이 [c]
     ground_far_size: float = 0.5     # inlet/outlet/top 근처 셀 크기 [c]
     min_quality: float = 0.05     # 허용 최소 셀 품질 (0~1, 삼각형 SICN / 사각형 SJ)
+    refine: float = 1.0           # 메쉬 전체 세분화 비율 (메쉬 독립성 확인용). 1.5면 모든 셀 크기·첫 셀 높이 ÷1.5,
+                                  # 표면 셀 수 ×1.5, 경계층 성장률^(1/1.5). 슬롯·지면 통로·뒷전 세분화도 같은 비율
     timeout: float = 300.0        # 형상 하나의 메쉬 생성 제한 시간 [s]. 넘으면 그 형상만 실패 처리 (0 = 제한 없음)
 
     @classmethod
@@ -70,18 +75,25 @@ class MeshSettings:
             raise ConfigError(f"[mesh] farfield_shape는 'circle' 또는 'box'여야 합니다: {obj.farfield_shape!r}")
         if obj.farfield_shape == "box" and min(obj.box_upstream, obj.box_downstream - 1, obj.box_height) <= 0:
             raise ConfigError("[mesh] box_upstream, box_height는 0보다, box_downstream은 1(시위)보다 커야 합니다.")
+        if not obj.refine > 0:
+            raise ConfigError(f"[mesh] refine은 0보다 커야 합니다: {obj.refine}")
         return obj
 
     def first_cell_height(self) -> float:
-        """평판 난류 마찰계수 추정으로 목표 y+에 맞는 첫 셀 높이 [c]."""
+        """평판 난류 마찰계수 추정으로 목표 y+에 맞는 첫 셀 높이 [c] (refine으로 나눔)."""
         cf = 0.026 / self.reynolds ** (1 / 7)
-        return self.y_plus * math.sqrt(2 / cf) / self.reynolds
+        return self.y_plus / self.refine * math.sqrt(2 / cf) / self.reynolds
+
+    def bl_ratio(self) -> float:
+        """경계층 성장률 (refine을 반영: 같은 두께를 refine배 많은 층으로)."""
+        return self.growth_rate ** (1 / self.refine)
 
 
 _NOT_IN_FINGERPRINT = ("timeout",)          # 메쉬 결과에 영향 없는 항목
 _ADDED_DEFAULTS = {                         # 나중에 추가된 항목과 그 기본값
     "farfield_split": False, "farfield_shape": "circle",
     "box_upstream": 20.0, "box_downstream": 40.0, "box_height": 20.0, "box_far_size": 2.0,
+    "refine": 1.0,
 }
 
 
@@ -125,7 +137,8 @@ def _fmt(v) -> str:
 
 def mesh_name(params: dict) -> str:
     """메쉬(형상) 이름. 예: 2412c350_4412c120d20g7o5_4412c90d40g5o3
-    (요소별 익형 + c코드, 플랩은 d각도 g갭 o오버랩)"""
+    (요소별 익형 + c코드, 플랩은 d각도 g갭 o오버랩). 케이스 변수 mesh_level이 있으면 끝에 _m<단계>
+    (같은 형상을 메쉬 설정만 바꿔 푸는 메쉬 독립성 확인용)."""
     p = geometry_params(params)
     name = _fmt(p["main_airfoil"]) + (f"c{_fmt(p['main_chord'])}" if "main_chord" in p else "")
     for i in range(1, n_flaps(p) + 1):
@@ -137,7 +150,10 @@ def mesh_name(params: dict) -> str:
     if p.get("downforce"):
         name += "_inv"
     if "ground_clearance" in p:
-        name += f"_h{_fmt(p['ground_clearance'])}" + (f"_a{_fmt(p['aoa'])}" if "aoa" in p else "")
+        name += (f"_h{_fmt(p['ground_clearance'])}" + ("le" if p.get("ground_ref") == "main_le" else "")
+                 + (f"_a{_fmt(p['aoa'])}" if "aoa" in p else ""))
+    if params.get("mesh_level") not in (None, ""):
+        name += f"_m{_fmt(params['mesh_level'])}"
     return name
 
 
@@ -148,7 +164,7 @@ def make_job(params: dict, mesh_cfg: dict, meshes_dir: Path) -> MeshJob:
     # [mesh] 항목과 같은 이름의 케이스 변수가 있으면 케이스 값 사용 (예: reynolds)
     merged = {**mesh_cfg, **{k: params[k] for k in mesh_cfg.keys() | {f.name for f in fields(MeshSettings)} if k in params}}
     settings = MeshSettings.from_dict(merged)
-    name = safe_name(mesh_name(geo))
+    name = safe_name(mesh_name(params))
     return MeshJob(name, meshes_dir / name, geo, settings)
 
 
@@ -162,10 +178,12 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     fan_points: list[int] = []
     te_points: list[int] = []
     lc = 1.0
+    f = s.refine  # 메쉬 독립성 확인용 세분화 비율: 모든 크기 ÷f, 셀 수 ×f
+    near_size, wake_size = s.near_size / f, s.wake_size / f
 
     for el in geom.elements:
         xy = el.xy
-        n_surf = s.surface_cells if el.name == "main" else s.flap_surface_cells
+        n_surf = max(4, round((s.surface_cells if el.name == "main" else s.flap_surface_cells) * f))
         sharp = el.sharp_te
         pts = xy[:-1] if sharp else xy
         tags = [geo.addPoint(x, y, 0, lc) for x, y in pts]
@@ -181,7 +199,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
             fan_points.append(tags[0])
         else:
             te = geo.addLine(tags[-1], tags[0])
-            geo.mesh.setTransfiniteCurve(te, s.te_cells + 1)
+            geo.mesh.setTransfiniteCurve(te, max(2, round(s.te_cells * f)) + 1)
             curves.append(te)
             fan_points += [tags[0], tags[-1]]
         te_points += [tags[0], tags[-1]]
@@ -194,7 +212,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
         # 자유류 직사각형 인클로저: 받음각은 inlet 속도 성분으로 주므로 유동이 아래 경계로 들어와
         # 위 경계로 나간다. 그래서 앞·위·아래를 모두 inlet(velocity-inlet, 자유류 속도 지정)으로 두고
         # 뒤만 outlet(pressure-outlet)으로 한다.
-        far_size = s.box_far_size
+        far_size = s.box_far_size / f
         grow = 0.5 * min(s.box_upstream, s.box_height)
         x0, x1 = -s.box_upstream, s.box_downstream
         y0, y1 = -s.box_height, s.box_height
@@ -205,7 +223,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     elif ground_y is None:
         # 자유류: 원형 원거리 경계 하나 (pressure-far-field)
         R = s.farfield_radius
-        far_size = s.farfield_size
+        far_size = s.farfield_size / f
         grow = 0.5 * R  # 이 거리에 걸쳐 셀이 far_size까지 커짐
         cx = 0.5
         center = geo.addPoint(cx, 0, 0, lc)
@@ -221,7 +239,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
             outer = {"farfield": (arcs, "pressure-far-field")}
     else:
         # 지면 효과: 직사각형 영역. 아래 = 지면(wall, Fluent에서 moving wall), 앞 = inlet, 뒤 = outlet, 위 = symmetry
-        far_size = s.ground_far_size
+        far_size = s.ground_far_size / f
         grow = 3.0
         x0, x1 = -s.ground_upstream, s.ground_downstream
         y0, y1 = ground_y, ground_y + s.ground_height
@@ -245,7 +263,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     bl = fld.add("BoundaryLayer")
     fld.setNumbers(bl, "CurvesList", all_walls)
     fld.setNumber(bl, "Size", s.first_cell_height())
-    fld.setNumber(bl, "Ratio", s.growth_rate)
+    fld.setNumber(bl, "Ratio", s.bl_ratio())
     fld.setNumber(bl, "Thickness", bl_thickness)
     fld.setNumber(bl, "Quads", 1)
     fld.setNumbers(bl, "FanPointsList", fan_points)
@@ -256,7 +274,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     fld.setNumber(dist, "Sampling", 400)
     near = fld.add("Threshold")
     fld.setNumber(near, "InField", dist)
-    fld.setNumber(near, "SizeMin", s.near_size)
+    fld.setNumber(near, "SizeMin", near_size)
     fld.setNumber(near, "SizeMax", far_size)
     fld.setNumber(near, "DistMin", 0.05)
     fld.setNumber(near, "DistMax", grow)
@@ -269,7 +287,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
         # 다운포스(뒤집힌) 형상은 유입 각도가 반대라 후류 방향도 거울상
         for ang in ([-a for a in s.wake_angles] if geom.info.get("downforce") else s.wake_angles):
             d = np.array([math.cos(math.radians(ang)), math.sin(math.radians(ang))])
-            for k in np.arange(0.02, s.wake_length, s.wake_size * 2):
+            for k in np.arange(0.02, s.wake_length, wake_size * 2):
                 x, y = te + k * d
                 if ground_y is not None and y < ground_y + 0.01:
                     break  # 지면 아래로 내려가는 후류선은 자름
@@ -279,7 +297,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     fld.setNumbers(wake_dist, "PointsList", wake_pts)
     wake = fld.add("Threshold")
     fld.setNumber(wake, "InField", wake_dist)
-    fld.setNumber(wake, "SizeMin", s.wake_size)
+    fld.setNumber(wake, "SizeMin", wake_size)
     fld.setNumber(wake, "SizeMax", far_size)
     fld.setNumber(wake, "DistMin", 0.02)
     fld.setNumber(wake, "DistMax", grow)
@@ -290,7 +308,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
     fld.setNumbers(te_all, "PointsList", te_points)
     te_ref = fld.add("Threshold")
     fld.setNumber(te_ref, "InField", te_all)
-    fld.setNumber(te_ref, "SizeMin", min(s.near_size, max(bl_thickness / 5, 1e-4)))
+    fld.setNumber(te_ref, "SizeMin", min(near_size, max(bl_thickness / 5, 1e-4) / f))
     fld.setNumber(te_ref, "SizeMax", far_size)
     fld.setNumber(te_ref, "DistMin", 3 * bl_thickness)
     fld.setNumber(te_ref, "DistMax", grow)
@@ -301,13 +319,13 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
         h = max(min(float(el.xy[:, 1].min()) for el in geom.elements) - ground_y, 1e-3)
         xs = np.concatenate([el.xy[:, 0] for el in geom.elements])
         gpts = [geo.addPoint(x, ground_y, 0, lc)
-                for x in np.arange(xs.min() - 0.5, xs.max() + 1.5, min(s.near_size, h / 8))]
+                for x in np.arange(xs.min() - 0.5, xs.max() + 1.5, min(near_size, h / 8 / f))]
         geo.synchronize()
         g_dist = fld.add("Distance")
         fld.setNumbers(g_dist, "PointsList", gpts)
         g_ref = fld.add("Threshold")
         fld.setNumber(g_ref, "InField", g_dist)
-        fld.setNumber(g_ref, "SizeMin", min(s.near_size, h / 8))
+        fld.setNumber(g_ref, "SizeMin", min(near_size, h / 8 / f))
         fld.setNumber(g_ref, "SizeMax", far_size)
         fld.setNumber(g_ref, "DistMin", 1.2 * h)
         fld.setNumber(g_ref, "DistMax", 1.0)
@@ -319,7 +337,7 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
         fld.setNumbers(te_dist, "PointsList", te_points[2 * i: 2 * i + 2])
         slot = fld.add("Threshold")
         fld.setNumber(slot, "InField", te_dist)
-        fld.setNumber(slot, "SizeMin", min(s.near_size, gap / 6))
+        fld.setNumber(slot, "SizeMin", min(near_size, gap / 6 / f))
         fld.setNumber(slot, "SizeMax", far_size)
         fld.setNumber(slot, "DistMin", 2 * gap + 0.01)
         fld.setNumber(slot, "DistMax", 0.3)
@@ -378,7 +396,9 @@ def _extract(walls: dict, outer: dict) -> tuple[np.ndarray, list, list[Boundary]
 class MeshWorker:
     """메쉬 생성을 별도 프로세스에서 실행한다 (gmsh가 멈추는 형상이 있어도 시간 제한 후 그 형상만 실패).
 
-    프로세스 하나를 여러 형상에 재사용하고, 시간 초과가 나면 그 프로세스를 끝내고 새로 띄운다.
+    형상마다 새 프로세스에서 만든다: gmsh는 한 프로세스 안에서 앞서 만든 메쉬에 따라(메모리 배치 등)
+    같은 설정이어도 셀이 조금씩 달라지는데, 새 프로세스의 첫 메쉬는 항상 같다. 그래서 만드는 순서·동시 개수·
+    팀원 분담(--part)과 관계없이 같은 메쉬가 나온다. 시간 초과가 나면 그 프로세스를 끝내고 새로 띄운다.
     """
 
     def __init__(self):
@@ -393,7 +413,7 @@ class MeshWorker:
     def _get_pool(self):
         if self._pool is None:
             import multiprocessing as mp
-            self._pool = mp.get_context("spawn").Pool(1)
+            self._pool = mp.get_context("spawn").Pool(1, maxtasksperchild=1)
         return self._pool
 
     def close(self, kill: bool = False) -> None:
@@ -405,38 +425,72 @@ class MeshWorker:
             self._pool.join()
             self._pool = None
 
-    def run(self, job: MeshJob, root: Path, plots: bool) -> dict:
-        import multiprocessing as mp
-
+    def run(self, job: MeshJob, root: Path, plots: bool, stop=None) -> dict:
+        """작업 프로세스에서 메쉬 생성. stop(threading.Event)이 켜지면 바로 프로세스를 끝내고 중단한다."""
+        timeout = job.settings.timeout if job.settings.timeout and job.settings.timeout > 0 else None
+        deadline = None if timeout is None else time.monotonic() + timeout
         result = self._get_pool().apply_async(_generate, (job, root, plots))
-        try:
-            return result.get(timeout=job.settings.timeout)
-        except mp.TimeoutError:
-            self.close(kill=True)
-            raise ConfigError(f"메쉬 생성 시간 초과 ({job.settings.timeout:g}초, {job.name}). "
-                              "형상 좌표(뒷전이 겹치거나 꼬인 곳)를 확인하세요.") from None
+        while not result.ready():
+            if stop is not None and stop.is_set():
+                self.close(kill=True)
+                raise ConfigError(f"중단됨 ({job.name})")
+            if deadline is not None and time.monotonic() >= deadline:
+                self.close(kill=True)
+                raise ConfigError(f"메쉬 생성 시간 초과 ({job.settings.timeout:g}초, {job.name}). "
+                                  "형상 좌표(뒷전이 겹치거나 꼬인 곳)를 확인하세요.")
+            result.wait(0.5)
+        return result.get()
 
 
-def generate_mesh(job: MeshJob, root: Path, plots: bool = True, worker: MeshWorker | None = None) -> dict:
+_BLAS_THREAD_VARS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
+
+
+@contextmanager
+def single_thread_blas():
+    """이 안에서 새로 띄우는(spawn) 작업 프로세스는 행렬 계산(BLAS) 스레드를 1개만 쓴다.
+
+    프로세스 여러 개가 각자 코어 수만큼 스레드를 띄우면 서로 경합해 수십 배 느려진다.
+    spawn으로 띄운 프로세스는 numpy를 불러오기 전에 이 환경변수를 읽는다.
+    """
+    saved = {k: os.environ.get(k) for k in _BLAS_THREAD_VARS}
+    os.environ.update({k: "1" for k in _BLAS_THREAD_VARS})
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def generate_mesh(job: MeshJob, root: Path, plots: bool = True, worker: MeshWorker | None = None,
+                  stop=None) -> dict:
     """메쉬 생성 → mesh.msh, mesh_info.json, 이미지 저장. 실패 시 ConfigError.
 
-    settings.timeout > 0 이면 별도 프로세스에서 시간 제한을 두고 실행한다 (worker를 주면 재사용).
+    worker를 주면 그 작업 프로세스에서 만든다(재사용). 없으면 settings.timeout > 0 일 때만 별도
+    프로세스에서 시간 제한을 두고 실행한다. 예상 못 한 오류도 ConfigError로 바꿔 그 형상만 실패 처리한다.
     """
     job.dir.mkdir(parents=True, exist_ok=True)
     # 재생성이 실패했을 때 이전 설정의 메쉬가 쓰이지 않도록 먼저 지운다
     for name in (MESH_FILE, INFO_FILE, ERROR_FILE):
         (job.dir / name).unlink(missing_ok=True)
     try:
-        if not job.settings.timeout or job.settings.timeout <= 0:
+        if worker is not None:
+            info = worker.run(job, root, plots, stop)
+        elif not job.settings.timeout or job.settings.timeout <= 0:
             info = _generate(job, root, plots)
-        elif worker is not None:
-            info = worker.run(job, root, plots)
         else:
             with MeshWorker() as w:
                 info = w.run(job, root, plots)
     except ConfigError as exc:
         (job.dir / ERROR_FILE).write_text(str(exc), encoding="utf-8")
         raise
+    except Exception as exc:  # gmsh 밖(메쉬 파일 쓰기·검증 등)에서 난 오류도 그 형상만 실패
+        (job.dir / MESH_FILE).unlink(missing_ok=True)
+        msg = f"메쉬 생성 오류 ({job.name}): {type(exc).__name__}: {exc}"
+        (job.dir / ERROR_FILE).write_text(msg, encoding="utf-8")
+        raise ConfigError(msg) from exc
     return info
 
 
@@ -491,8 +545,10 @@ def _generate(job: MeshJob, root: Path, plots: bool) -> dict:
         "first_cell_height_c": h1,
         "first_cell_height_m": h1 * s.chord,
         "bl_thickness_c": bl_thickness,
-        "bl_layers": int(math.log(1 + bl_thickness * (s.growth_rate - 1) / h1) / math.log(s.growth_rate)),
+        "bl_layers": int(math.log(1 + bl_thickness * (s.bl_ratio() - 1) / h1) / math.log(s.bl_ratio())),
         "min_quality": q_min,
+        "min_orthogonal_quality": check["min_orthogonal_quality"],  # Fluent Mesh > Quality 와 같은 정의
+        "cells_oq_below_0.1": check["cells_oq_below_0.1"],
         "attempts": attempt,
         **stats,
     }

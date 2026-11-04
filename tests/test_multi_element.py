@@ -115,3 +115,47 @@ def test_screening_selects_within_each_case_set(tmp_path):
     kept_sets = {c.params["case_set"] for c in cases if c.name in r["kept"]}
     assert kept_sets == {"2el", "3el"}  # 3단이 L/D에서 불리해도 3단 안에서 따로 선별
     assert (r["dir"] / "case_set=3el" / "sensitivity_importance.png").is_file()
+
+
+def test_four_element_geometry_and_mesh(tmp_path):
+    four = {**THREE, "flap3_airfoil": "0012", "flap3_chord": 60, "flap3_deflection": 55,
+            "flap3_gap": 4, "flap3_overlap": 2}
+    g = build_geometry(four, Path("."))
+    assert [e.name for e in g.elements] == ["main", "flap1", "flap2", "flap3"]
+    assert signed_distance(g.elements[2].te_lower, g.elements[3].xy)[0] * 350 == pytest.approx(4, abs=1e-6)
+    assert mesh_name(four).count("_") == 3
+    settings = dict(chord=0.35, reynolds=2e5, surface_cells=60, flap_surface_cells=40,
+                    farfield_radius=10, farfield_size=1.0, near_size=0.03, wake_size=0.05, wake_length=1.0)
+    job = make_job(four, settings, tmp_path)
+    info = generate_mesh(job, Path("."), plots=False)
+    assert set(info["zones"]) == {"interior-fluid", "main", "flap1", "flap2", "flap3", "farfield"}
+    assert check_msh(job.mesh_file)["bad_cells"] == 0
+
+
+def test_value_coverage_spot_checks_and_priority(tmp_path):
+    from aero_automation.screening import screen
+
+    test_case_sets_two_and_three_element(tmp_path)
+    cfg = load_config(tmp_path / "project.toml")
+    cases = build_cases(cfg)
+    by_name = {c.name: c for c in cases}
+    base = {"keep_top": 1, "keep_within": 0.0, "spot_check": 0, "n_side": 50}
+
+    cfg.screening = {**base, "spot_check_values": False}
+    r = screen(cfg, cases, log=lambda *_: None)
+    assert not r["spot_check"]
+    chords = {by_name[n].params["flap1_chord"] for n in r["kept"] if by_name[n].params["case_set"] == "2el"}
+    assert len(chords) == 1  # 한쪽 플랩 코드만 CFD로 감
+
+    cfg.screening = base
+    r = screen(cfg, cases, log=lambda *_: None)
+    spot = {n for s in r["spot_check"] for n in s["cases"]}
+    for case_set, key in (("2el", "flap1_chord"), ("3el", "flap2_chord")):
+        kept = [by_name[n] for n in r["kept"] if by_name[n].params["case_set"] == case_set]
+        assert {c.params[key] for c in kept} == {80, 150}  # 남은 계열에 없는 값도 스팟 체크로 확인
+        assert {c.params[key] for c in kept if c.name in spot} == ({80, 150} - {c.params[key] for c in kept if c.name not in spot})
+
+    selection = json.loads((r["dir"] / "selection.json").read_text(encoding="utf-8"))
+    priority = selection["priority"]
+    assert sorted(priority) == sorted(r["kept"])
+    assert set(priority[: len(spot)]) == spot  # 스팟 체크 먼저
