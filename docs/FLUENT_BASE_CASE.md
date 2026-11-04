@@ -126,6 +126,29 @@ Cell Zone Conditions → `fluid`의 Material이 air인지 확인합니다.
 
 Controls는 기본값으로 시작합니다.
 
+### 잔차 기준 (꼭 바꾸기)
+
+`Solution > Monitors > Residual`: **Absolute Criteria를 모두 1e-6**으로 낮춥니다.
+- 기본값(1e-3)이면 다운포스·항력이 수렴하기 전에 계산이 멈춥니다. 지면 근처 다요소 날개는 특히 그렇습니다.
+- 1e-6에 도달하면 Fluent가 "solution is converged"를 출력하고 일찍 끝나며, 도구는 그 경우도 `converged`로 기록합니다.
+  그 밖에는 `iterations`(예제 2000)회를 다 돌고, 도구가 마지막 반복들의 힘계수 진폭으로 수렴 상태를 판정합니다.
+
+### (선택) 힘계수 수렴 조건 — 계산 시간 줄이기
+
+케이스가 수천 개라 케이스당 시간이 전체 일정을 좌우합니다. 다운포스·항력이 더 변하지 않으면 바로 멈추게 할 수 있습니다.
+`Solution > Monitors > Convergence Conditions`(버전에 따라 Report Definitions 옆) → 9번에서 만든 **`cy`, `cx` 추가**
+
+| 항목 | 값 |
+|---|---|
+| Stop Criterion | 1e-5 |
+| Ignore Iterations Before (Initial Values to Ignore) | 300 |
+| Use Iterations (Previous Values to Consider) | 50 |
+| Use / Print | 체크 |
+
+- 두 조건을 모두 만족할 때 멈추도록 **Every Iteration / All Conditions**로 둡니다.
+- 멈춘 케이스도 도구가 마지막 반복 이력으로 수렴 상태를 다시 판정하므로, 너무 일찍 멈추면 `oscillating`으로 표시됩니다.
+  파일럿에서 `convergence.png`를 보고 너무 이르면 Stop Criterion을 1e-6으로 낮추세요.
+
 ## 9. Report Definitions (다운포스·항력)
 
 `Solution > Report Definitions > New > Force Report > Force...`
@@ -223,19 +246,69 @@ GUI로는 상단 리본 **Viewing** 탭의 **Views...** 버튼 → Save Name 입
 3. `File > Write > Stop Journal`
 4. `record.jou`를 보내주시면 `journal.jou`를 그 형식에 맞춰 고칩니다.
 
-## 16. 파일럿 실행
+## 16. 점검과 파일럿 실행
+
+먼저 Fluent 없이 확인할 수 있는 것을 점검합니다 (베이스 케이스 파일, 메쉬, 저널 치환, 경로, 디스크·시간 추정).
 
 ```bat
 cd examples\flap_optimization
 ```
 ```bat
-aero-auto run --all --only "2el_4412c375_f115d20g6_h30_v100_a4"
+aero-auto check
+```
+
+`[오류]`, `[할 일]`이 없어야 합니다. Fluent 실행 파일을 못 찾으면 `project.toml`의 `[solver] executable`에 경로를 적습니다.
+경로에 한글이 있다는 `[경고]`가 나오면 프로젝트를 `C:\aero` 같은 영문 경로로 옮기세요 (Fluent가 파일을 못 읽는 경우가 많음).
+
+케이스 하나씩 배치로 돌려봅니다. 스크리닝에서 남은 형상이라 결과가 본 배치에 그대로 쓰입니다
+(베이스 케이스를 만든 샘플 메쉬와 형상이 달라도 같은 2단·3단 구성이면 메쉬만 바뀌어 그대로 돌아갑니다).
+
+```bat
+aero-auto run --only "2el_4412c375_f150d30g6_h30_v100_a4"
 ```
 ```bat
-aero-auto run --all --only "3el_4412c375_f80d25_f80d35g8_h30_v100_a4"
+aero-auto run --only "3el_4412c375_f150d25_f150d45g5_h30_v100_a4"
 ```
 
 확인할 것
-- `runs\2el_4412c375_h30\2el_4412c375_f115d20g6_h30_v100_a4\solver.log` 에 Error가 없는지
+- `runs\2el_4412c375_h30\2el_4412c375_f150d30g6_h30_v100_a4\transcript.txt`에 Error가 없는지.
+  Windows에서 `-hidden`으로 실행하면 Fluent 출력은 `solver.log`가 아니라 이 파일에 남습니다(저널 첫 줄의 `/file/start-transcript`).
+  도구도 이 파일에서 오류·발산·잔차를 읽습니다.
 - 같은 폴더에 `coef-rfile.out`, `img_*.png`, `result.cas.h5`가 생겼는지
-- `aero-auto status`에 표시되는 케이스당 소요 시간
+- `convergence.png`: 다운포스(`cy`)가 평평해졌는지, 잔차 기준 때문에 너무 일찍 멈추지 않았는지
+- 저널 명령이 맞지 않으면 transcript.txt의 첫 오류 줄을 보고 15번(저널 녹화)으로 해당 줄을 고칩니다.
+
+파일럿이 끝나면 다시 `aero-auto check`를 실행합니다. 끝난 케이스의 실제 실행 시간과 폴더 크기로 전체 시간·디스크를 다시 계산해 줍니다.
+디스크가 모자라면 `journal.jou`의 `/file/write-case-data` 줄 앞에 `;`를 붙여 끄세요 (컨투어 이미지는 그대로 저장됨).
+
+## 17. 메쉬 독립성 확인 (본 배치 전 한 번)
+
+같은 케이스를 메쉬 3단계(성김·보통·조밀, 셀 크기 1.5배 차이)로 풀어 본 배치 메쉬(보통)의 이산화 불확실성을 구합니다.
+베이스 케이스와 저널은 본 배치와 같은 것을 씁니다 (`mesh_study.toml`, 결과는 `runs_mesh/`).
+
+```bat
+aero-auto -c mesh_study.toml mesh
+```
+```bat
+aero-auto -c mesh_study.toml run
+```
+```bat
+aero-auto -c mesh_study.toml gci
+```
+
+- 2단·3단 각 1개 형상 × 받음각 4°, 12° × 3단계 = 12 케이스 (지상고 30 mm, 100 km/h: 가장 까다로운 조건)
+- 셀 수: 성김 3.3만~4.9만, 보통 7.3만~10.9만(본 배치와 같은 메쉬), 조밀 16만~24만. 조밀 메쉬는 케이스당 시간이 2배 넘게 걸립니다.
+- `gci`가 Cl, Cd(요소별 포함)마다 관측 차수 p, 셀 크기 0으로 외삽한 값, GCI(%)를 출력하고 `runs_mesh/mesh_study/gci.csv`, `gci_*.png`에 저장합니다.
+- 보통 메쉬의 GCI가 Cl 2%, Cd 5% 이내면 본 배치 설정 그대로 진행합니다. 넘으면 `project.toml`의 `[mesh] refine = 1.3` 처럼 전체를 조밀하게 하고 다시 확인합니다.
+- `convergence`가 `monotonic`이 아니면(진동·발산) 먼저 각 케이스의 반복 수렴(`conv_state`, `convergence.png`)을 확인하세요.
+
+## 18. 본 배치
+
+```bat
+aero-auto run --priority --limit 100
+```
+
+- `--priority`: 스팟 체크(스크리닝이 뺀 쪽을 대표로 확인하는 케이스) → 점수 높은 계열·형상 → 받음각 순서로 실행합니다. 중간에 멈춰도 중요한 결과가 먼저 남습니다.
+- `--limit 100`: 남은 케이스 중 100개만. 끝나면 `aero-auto collect`로 스팟 체크 경고를 확인하고, 경고가 없으면 `--limit` 없이 나머지를 돌립니다.
+  경고가 나오면(제외된 형상이 CFD에서 더 좋음) `[screening] keep_within`을 늘리거나 `protect`에 그 변수를 넣고 `screen`부터 다시 합니다.
+- 진행 상황과 남은 시간: `aero-auto status`

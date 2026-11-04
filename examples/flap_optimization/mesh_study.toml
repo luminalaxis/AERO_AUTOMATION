@@ -2,7 +2,8 @@
 #   같은 케이스를 메쉬 3단계(1 = 성김, 2 = 보통 = 본 배치 설정, 3 = 조밀)로 풀어서 Cl, Cd가 메쉬에 따라
 #   얼마나 바뀌는지 보고, 본 배치 메쉬(2단계)의 이산화 불확실성(GCI)을 구합니다.
 #
-#   aero-auto -c mesh_study.toml mesh     메쉬 12개 (단계마다 셀 크기 1.5배 차이 → 셀 수 약 2.2배)
+#   aero-auto -c mesh_study.toml mesh     메쉬 12개 (단계마다 셀 크기 1.5배 차이 → 셀 수 약 2.2배:
+#                                          성김 3.3만~4.9만, 보통 7.3만~10.9만, 조밀 16만~24만 셀, 4코어 약 2분)
 #   aero-auto -c mesh_study.toml run      Fluent 12 케이스 (베이스 케이스·저널은 본 배치와 같은 것)
 #   aero-auto -c mesh_study.toml gci      → runs_mesh/mesh_study/gci.csv, gci_*.png
 #

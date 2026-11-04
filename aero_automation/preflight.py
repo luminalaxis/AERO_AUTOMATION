@@ -275,10 +275,12 @@ def _mesh_checks(cfg: ProjectConfig, run_cases: list[Case], add) -> list[int]:
     if oq:
         worst = min(oq, key=oq.get)
         low = [n for n, q in oq.items() if q < 0.1]
-        level = ERROR if oq[worst] < 0.01 else WARN if low else OK
+        # Fluent: 0.01 미만은 계산이 불안정(사실상 오류), 0.1 이상 권장. 셀 몇 개가 0.05~0.1인 것은 흔하고 괜찮다
+        level = ERROR if oq[worst] < 0.01 else WARN if oq[worst] < 0.05 else INFO if low else OK
         add(level, f"직교 품질(Fluent Orthogonal Quality) 최소 {oq[worst]:.3f}"
-            + (f", 0.1 미만 메쉬 {len(low)}개" if low else ""),
-            f"메쉬 {len(oq)}개 기준, 가장 낮은 메쉬 {worst}. Fluent는 0.01 미만이면 계산이 불안정하고 0.1 이상을 권장")
+            + (f", 0.1 미만 셀이 있는 메쉬 {len(low)}개" if low else ""),
+            f"메쉬 {len(oq)}개 기준, 가장 낮은 메쉬 {worst}. Fluent는 0.01 미만이면 계산이 불안정하고 0.1 이상을 권장 "
+            "(0.1 미만 셀 수는 mesh_info.json의 cells_oq_below_0.1)")
     hs = {round(j.settings.first_cell_height() * j.settings.chord * 1e6, 2) for j in jobs.values()}
     res = [j.settings.reynolds for j in jobs.values()]
     if hs:

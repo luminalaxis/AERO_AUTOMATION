@@ -151,8 +151,12 @@ aero-auto collect --only "naca0012*"
 
 기획서의 "해석 신뢰성 확인" 단계입니다. 본 생성과 같은 베이스 케이스로 NACA 0012만 돌립니다.
 
-1. `[mesh]`의 `surface_cells`(100 / 200 / 400)와 `y_plus`(2 / 1 / 0.5)를 바꾼 프로젝트 사본(`project_mesh.toml`, `output_dir = "runs_mesh"`)을 만들어 `--only "naca0012*"`로 실행
-2. CL, CD 변화가 1~2% 이내로 들어오는 단계를 본 생성 설정으로 고정
+1. 프로젝트 사본(`project_mesh.toml`, `output_dir = "runs_mesh"`)에서 `[cases.sweep] mesh_level = [1, 2, 3]`을 추가하고
+   `[derived] refine = "1.5 ** (mesh_level - 2)"`를 넣습니다. `refine`은 모든 셀 크기·첫 셀 높이를 나누고 표면 셀 수를 곱하는
+   `[mesh]` 항목이라 단계마다 메쉬 전체가 일정한 비율로 바뀝니다(2단계 = 본 생성 메쉬). 케이스 이름에 `_m{mesh_level}`을 넣고
+   `--only "naca0012*"`로 `mesh`, `run`을 실행합니다. 예: `examples/flap_optimization/mesh_study.toml`
+2. `aero-auto -c project_mesh.toml gci`로 CL, CD의 Richardson 외삽값과 GCI(이산화 불확실성)를 봅니다.
+   보통(2단계) 메쉬의 GCI가 1~2% 이내면 본 생성 설정으로 고정
 3. 공개 풍동 실측(예: Re 2×10⁵ 부근 NACA 0012 극선도)과 같은 받음각에서 비교
 
 ## Transition SST 비교 (경계 사례용)

@@ -2,7 +2,7 @@
 
 아 귀찮은 케이스 분류 해석 자동화 할겁니다
 
-2D **다요소 날개(메인 + 슬롯 플랩 1~2개)** 형상 최적화를 위한 ANSYS Fluent 배치 해석 자동화 도구입니다. 예제는 **지면 효과를 받는 다운포스용 뒤집힌 날개**(움직이는 바닥, 지상고 30~60 mm)이고, 형상 순위 기준은 **최대 다운포스**(`objective = "max_cl"`)입니다.
+2D **다요소 날개(메인 + 슬롯 플랩 1~2개, 최대 3개)** 형상 최적화를 위한 ANSYS Fluent 배치 해석 자동화 도구입니다. 예제는 **지면 효과를 받는 다운포스용 뒤집힌 날개**(움직이는 바닥, 지상고 30~60 mm)이고, 형상 순위 기준은 **최대 다운포스**(`objective = "max_cl"`)입니다.
 2단(메인 + 플랩 1개)·3단(메인 + 플랩 2개) 구성의 형상(익형, 요소별 코드 길이, 플랩 각도, 갭, 오버랩) × 지상고 × 받음각 × 속도 케이스를 만들고, **저충실도 해석으로 가망 없는 케이스를 미리 걸러낸 뒤**, 형상마다 메쉬를 자동 생성해 Fluent로 돌리고 Cl/Cd 정리, 형상 순위, 이미지 저장까지 한 번에 처리합니다.
 
 두 번째 예제(`examples/airfoil_dataset`)는 **단일 익형 120개 × 받음각 14개 × Re 2개 = 3,360 케이스**로 양항계수 데이터셋을 만들고, CST 형상 계수를 입력으로 하는 **CL·CD 회귀 모델(얇은 익형 이론 기준 / LightGBM / MLP 앙상블)을 학습·평가**합니다. 아래 ["예제 2: 단일 익형 데이터셋과 회귀 모델"](#예제-2-단일-익형-데이터셋과-회귀-모델)을 보세요.
@@ -11,18 +11,21 @@
 project.toml (2단/3단 세트, 형상·지상고·받음각·속도 스윕)
    │ screen 패널법(+지면 거울상) + 경계층 근사로 전 케이스 추정 (병렬)
    │        → 민감도 그래프, 하위 형상 계열·실속 이후 받음각 제외 (세트·속도별, selection.json)
-   │ mesh   남은 형상만 gmsh 자동 메쉬 → Fluent .msh  (속도만 다른 케이스는 메쉬 공유)
+   │ mesh   남은 형상만 gmsh 자동 메쉬 → Fluent .msh  (속도만 다른 케이스는 메쉬 공유, CPU 코어 수만큼 동시에)
    │        직사각형 영역: inlet / outlet / top / ground(moving wall)
-   │        + geometry.png, mesh.png, mesh_slot1/2.png, mesh_le.png, mesh_domain.png
-   │ run    케이스별 저널 생성 → fluent 2ddp -t4 -hidden -i run.jou
-   │        (base_2el/3el.cas.h5 읽기 → 메쉬 교체 → 속도/기준값 변경 → 계산 → 컨투어 이미지)
+   │        + geometry.png, mesh.png, mesh_slot1/2.png, mesh_le.png, mesh_domain.png, 직교 품질
+   │ check  Fluent 없이 실행 준비 점검: 베이스 케이스, 메쉬, 경계 이름, 저널, 경로, 디스크·시간 추정
+   │ run    케이스별 저널 생성 → fluent 2ddp -t4 -hidden -wait -i run.jou
+   │        (transcript 시작 → base_2el/3el.cas.h5 읽기 → 메쉬 교체 → 속도/기준값 변경 → 계산 → 컨투어 이미지)
+   │        --priority: 스팟 체크 → 유망한 형상 순서
    │ collect
    ▼
 runs/screening/      저충실도 추정, 민감도 그래프, 선별 결과
 runs/summary.csv     케이스별 조건 + Cl, Cd, L/D (요소별 포함), 단위 폭당 양력·항력 [N/m]
 runs/ranking.csv     형상별 최대 Cl, 최대 L/D 순위 (속도별로 따로)
 runs/plots/          속도별 폴더에 Cl-α, Cd-α, L/D-α, 극곡선 + 속도에 따른 형상별 최대 L/D
-runs/<그룹>/<케이스>/ convergence.png, img_*.png (Fluent 컨투어)
+runs/<그룹>/<케이스>/ convergence.png, img_*.png (Fluent 컨투어), transcript.txt (Fluent 출력)
+runs_mesh/mesh_study/ 메쉬 독립성 확인 (mesh_study.toml → gci: Richardson 외삽, GCI)
 ```
 
 ## 설치
@@ -54,15 +57,19 @@ aero-auto plan --dry-run   # 케이스 목록 확인 (25344개 = 형상 264개 �
 ```
 
 ```bash
-aero-auto screen           # 세트·속도별 저충실도 선별 (예제: 25344개 → 3464개, 4코어 약 5분)
+aero-auto screen           # 세트·속도별 저충실도 선별 (예제: 25344개 → 3484개, 4코어 5~10분)
 ```
 
 ```bash
-aero-auto mesh             # 남은 형상만 메쉬 생성 (각 5~7초) + 이미지
+aero-auto mesh             # 남은 형상만 메쉬 생성 (형상 872개, 4코어 동시 생성 약 50분) + 이미지
 ```
 
 ```bash
-aero-auto run              # 메쉬 확인 → 남은 케이스만 Fluent 배치 실행 → 결과 정리
+aero-auto check            # Fluent 실행 전 점검 (아래 "Fluent 실행 순서" 참고)
+```
+
+```bash
+aero-auto run --priority   # 남은 케이스만 Fluent 배치 실행 (스팟 체크 → 유망한 형상 순서) → 결과 정리
 ```
 
 ```bash
@@ -74,10 +81,49 @@ aero-auto collect          # 결과 다시 정리 (summary, ranking, 그래프)
 ```
 
 - `--only "2el_4412c375*"`: 일부 케이스만 실행 (와일드카드, 그룹 이름도 가능)
-- `-j 2`: 동시 실행 수 (라이선스와 코어 수 고려)
+- `-j 2`: 동시 실행 수 (라이선스와 코어 수 고려). `mesh -j 4`는 동시에 만들 메쉬 수(기본: CPU 코어 수, 최대 8. 메쉬당 메모리 약 300 MB)
+- `--limit 100`: 남은 케이스 중 앞의 100개만 실행 (나눠서 돌릴 때, `--priority`와 함께)
 - 중단돼도 다시 `run` 하면 완료된 케이스와 이미 만든 메쉬는 건너뜁니다. 전부 다시 하려면 `run --force`, `mesh --force`.
 - `screen`을 한 번 돌리면 이후 `mesh`, `run`은 제외된 케이스를 자동으로 건너뜁니다(상태 `screened`). 스크리닝을 무시하려면 `--all`.
 - 실패 판정: 종료 코드, 로그의 `Error:` / `Divergence detected`, 시간 초과(`timeout_minutes`), 메쉬 생성 실패.
+  로그는 `solver.log`(표준 출력)와 `transcript.txt`(저널의 `/file/start-transcript`)를 함께 봅니다. Windows에서 `-hidden`으로 실행하면
+  Fluent 출력이 표준 출력으로 나오지 않아서 transcript가 필요합니다. transcript에 다시 찍힌 저널 주석 줄은 검사에서 뺍니다.
+- 다시 실행할 때는 그 케이스 폴더의 이전 결과(리포트, 이미지, transcript, `result.cas.h5`/`.dat.h5`)를 먼저 지웁니다.
+  Fluent가 덮어쓰기 확인을 물으면 그다음 저널 줄이 답으로 읽혀 배치가 꼬이기 때문입니다.
+- `status`는 끝난 케이스의 실행 시간(중앙값)으로 남은 시간을 추정합니다 (`-j`로 동시 실행 수 지정).
+
+## Fluent 실행 순서 (예제)
+
+Fluent를 돌리기 전에 할 수 있는 것은 `screen` → `mesh` → `check`까지입니다. 그다음부터는 Fluent가 필요합니다.
+
+| 순서 | 명령 | 내용 |
+|---|---|---|
+| 1 | `aero-auto screen` | 25,344 → 3,484 케이스 (스팟 체크 형상 8개 × 대표 받음각 = 28 케이스 포함). 4코어 5~10분 |
+| 2 | `aero-auto mesh` | 남은 케이스의 메쉬 872개 (4코어 동시 생성 약 50분, 실패 0개) |
+| 3 | `aero-auto check` | 아래 항목 점검. `[오류]`, `[할 일]`이 없을 때까지 |
+| 4 | Fluent GUI | 베이스 케이스 `base_2el.cas.h5`, `base_3el.cas.h5` ([docs/FLUENT_BASE_CASE.md](docs/FLUENT_BASE_CASE.md), 잔차 기준 1e-6 포함) |
+| 5 | `run --only <파일럿>` | 2단·3단 파일럿 1개씩([아래](#파일럿-확인-순서)). `transcript.txt`, `convergence.png`, 이미지 확인 후 `check`로 실제 시간·디스크 재추정 |
+| 6 | `-c mesh_study.toml mesh/run/gci` | 메쉬 독립성 12 케이스 → 본 배치 메쉬의 GCI ([아래](#메쉬-독립성-확인-mesh_level-refine-gci)) |
+| 7 | `run --priority --limit 100` → `collect` | 스팟 체크부터. 스크리닝이 뺀 쪽이 CFD에서 더 좋다는 경고가 없는지 확인 |
+| 8 | `run --priority` | 나머지. `status`로 남은 시간 확인 |
+
+**`check` 점검 항목** (아무것도 만들거나 바꾸지 않음, 문제가 있으면 종료 코드 1)
+
+| 항목 | 내용 |
+|---|---|
+| 케이스 | 스크리닝 반영 후 실행할 케이스 수, 스크리닝 뒤에 추가된 케이스, 이미 끝난 케이스 |
+| 저널 | 모든 케이스의 변수 치환, `start-transcript` 유무, `${mesh_file}` 유무, 이미지 저장과 `graphics` 설정, 리포트 파일 이름과 `[results] report_files` 패턴, 평균 구간 대 반복 수 |
+| 베이스 케이스 | 저널의 `read-case` 경로마다 파일이 있는지 (세트별 케이스 수와 함께) |
+| Fluent | 실행 파일(`[solver] executable` 또는 `AWP_ROOTxxx`), 동시 실행 × `processes`와 코어 수 |
+| 메쉬 | 있음/없음/실패, **베이스 케이스(세트)마다 경계 이름이 같은지**(다르면 `replace-mesh` 실패), 셀 수, 첫 셀 높이, Fluent 정의 직교 품질 |
+| 경로 | 한글 등 영문 외 문자(Fluent가 못 읽는 경우가 많음), OneDrive, 가장 긴 파일 경로(Windows 260자) |
+| 디스크·시간 | 남은 케이스 × 케이스당 크기·시간. 끝난 케이스가 있으면 그 실제 값(중앙값)으로, 없으면 셀 수와 몇 가지 가정으로 |
+
+예제에서 Fluent 전 `check` 결과(메쉬 872개를 모두 만든 뒤, 베이스 케이스를 만들기 전): 베이스 케이스 2개 `[할 일]`,
+메쉬 경계 이름은 세트마다 일치(2단 436개, 3단 436개), 셀 6.7만~13.3만 개(중앙값 9.6만), 첫 셀 높이 약 12 µm,
+직교 품질 최소 0.059(0.1 미만 셀은 메쉬 4개에 1개씩, 모두 뒷전 0.01c 안: 플랩 뒷전 3개, 메인 뒷전 1개), 가장 긴 파일 경로는 프로젝트 폴더 경로 + 87자,
+`result.cas.h5`까지 저장하면 디스크 약 68 GB(result 파일을 셀당 200 B로 잡은 추정), 케이스당 3~10분이면 동시 1개 기준 7~24일입니다. 그래서 위 5번의 파일럿 시간으로 일정을 다시 잡고, 필요하면 `-j`(라이선스·코어),
+힘계수 수렴 조건(베이스 케이스 문서 8번), `--limit`로 나눠 실행을 조합하세요.
 
 ## 예제 2: 단일 익형 데이터셋과 회귀 모델
 
@@ -267,7 +313,7 @@ tsst_summary = "runs_tsst/summary.csv"
 - **지상고 기준:** 기본(`ground_ref = "lowest"`)은 **회전한 날개의 최하단~지면 거리**입니다. `"main_le"`로 바꾸면 메인 앞전~지면 거리가 됩니다. 이 경우 뒤집힌 날개는 아랫면이 앞전보다 시위의 약 10% 아래로 내려와서, 낮은 지상고에서는 날개가 지면을 뚫는 케이스가 생기고 그 케이스는 형상 불가로 처리됩니다. `geometry.png`에 최하단 높이와 앞전 높이가 함께 표시됩니다.
 - **메쉬:** 날개와 지면 사이 통로를 지상고의 1/8 크기로 세분화합니다. 지면은 움직이는 바닥이라 지면 경계층은 따로 두지 않습니다.
 - **스크리닝:** 패널법에 지면 거울상(image method)을 넣어 지면 효과를 근사합니다. 지상고가 낮을수록 다운포스가 커지는 경향은 잡지만, 아주 낮은 지상고에서 점성 때문에 다운포스가 꺾이는 현상은 과소평가하므로 `ground_clearance`는 기본 보호 변수입니다(지상고 값만으로는 제외하지 않음).
-- **지면 모드 스크리닝의 한계:** 지면 근처에서는 비점성 해석이 날개 아래 흡입을 크게 과대평가합니다(예제에서 추정 Cl max 2단 6~8, 3단 13~18, 실제는 대략 2~4). 그 결과 박리가 일찍 판정돼 추정 실속각이 2~4°로 너무 낮게 나옵니다. 그래서 예제는 **받음각 선별을 끄고(`prune_aoa = false`)** 형상 계열 선별만 씁니다(25,344 → 3,464케이스). 받음각 범위는 첫 CFD 결과를 보고 줄이세요.
+- **지면 모드 스크리닝의 한계:** 지면 근처에서는 비점성 해석이 날개 아래 흡입을 크게 과대평가합니다(예제에서 추정 Cl max 2단 약 6~33(지상고별 중앙값 10~17), 3단 약 14~110(중앙값 29~55), 실제는 대략 2~4). 그 결과 박리가 일찍 판정돼 추정 실속각이 0~6°(중앙값 1~2°)로 너무 낮게 나옵니다. 그래서 예제는 **받음각 선별을 끄고(`prune_aoa = false`)** 형상 계열 선별만 씁니다(25,344 → 3,484케이스). 받음각 범위는 첫 CFD 결과를 보고 줄이세요.
 
 주어진 overlap에서 gap이 정확히 맞도록 플랩 높이를 자동으로 계산하고, 요소끼리 겹치거나 불가능한 조합이면 해당 형상만 실패 처리합니다. 앞선 모든 요소와의 실제 최소 간격은 `mesh_info.json`의 `flaps[].clearance`에 기록합니다.
 
@@ -348,6 +394,12 @@ split_by = ["speed_kmh"]     # 속도별로 순위·그래프·스크리닝 선�
 3. **보호 변수 (기본 `*gap`, `*overlap`, `main_chord`, `chord`):** 슬롯 갭·오버랩은 합류 경계층 같은 점성 효과가 커서 저충실도 예측이 부정확하고, 메인 코드는 길수록 Re가 커져 L/D가 항상 유리합니다. 그래서 이 값만으로는 제외하지 않고, 남은 계열 안에서는 모든 값을 CFD로 돌립니다. 와일드카드를 쓸 수 있습니다(`*gap`은 `flap1_gap`, `flap2_gap` 모두).
 4. **받음각 선별:** 추정 실속각 + `aoa_margin`을 넘는 받음각은 제외합니다. 실속 이후 거동 확인용으로 넘는 첫 받음각 1개는 남깁니다.
 5. **스팟 체크:** 선별 단위마다 제외된 계열 중 최상위 `spot_check`개의 최고 형상은 받음각 1~2개만 CFD로 돌립니다. `collect`에서 이 형상이 같은 조건의 남긴 형상보다 좋게 나오면 경고합니다. 이 경우 `keep_within`을 늘려 다시 `screen` 하세요.
+6. **값 커버리지 스팟 체크 (`spot_check_values`, 기본 켬):** 남은 계열에 한 번도 나오지 않는 변수 값(예: 플랩 각도 20°, 플랩 코드 80 mm)마다 그 값을 가진 최고 계열의 최고 형상도 받음각 1~2개만 CFD로 돌립니다. 저충실도 점수가 한쪽 끝 값에만 몰려도 반대쪽을 CFD로 한 번은 확인하게 해서, 5번 경고가 그 방향도 잡도록 합니다.
+7. **플랩 박리 경고 (`flap_sep_warn`):** 남은 형상의 추정 플랩 흡입면 박리 비율 중앙값이 30%를 넘으면 `screen`이 경고합니다. 선별 점수(비점성 Cl)는 박리로 인한 양력 손실을 반영하지 않아서 플랩 각도가 큰 형상이 실제보다 유리하게 나오기 때문입니다.
+
+**예제 스크리닝 결과 (확인할 점):** 남은 계열이 플랩 코드·각도의 최댓값 쪽에 몰립니다. 2단은 플랩 각도 30°만(코드 115·150 mm), 3단은 두 플랩 모두 150 mm에 두 번째 플랩 45°만 남습니다. 같은 저충실도 해석의 플랩 박리 추정은 남은 계열이 2단 약 40%, 3단 30~40%로, 제외된 각도(2단 20°: 약 20%, 3단 35°: 20~30%)보다 훨씬 큽니다. 실제로는 각도가 작은 계열이 다운포스가 더 클 수도 있으므로, 본 배치 전에 `run --priority --limit 100`으로 스팟 체크(20°, 80 mm, 35° 계열 포함)를 먼저 돌리고 `collect` 경고를 확인하세요. 경고가 나오면 `[screening] protect`에 `"*deflection"`을 넣어(각도별로 제외하지 않음) 다시 `screen` 합니다. 이 경우 CFD 케이스가 대략 두 배가 됩니다.
+
+`selection.json`에는 실행 우선순위(`priority`: 스팟 체크 → 계열 순위 → 형상 점수 → 받음각)도 저장되어 `run --priority`가 이 순서를 씁니다.
 
 **결과물 (`runs/screening/`)**
 
@@ -371,6 +423,8 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 | `keep_top` | 3 | 항상 유지할 상위 계열 수 |
 | `keep_within` | 0.05 | 최고 계열 대비 이 비율 이내면 유지. 늘리면 안전하지만 절감이 줄어듦 |
 | `spot_check` | 1 | 제외 계열 검증용으로 대표 케이스만 돌릴 계열 수 |
+| `spot_check_values` | true | 남은 계열에 없는 변수 값마다 그 값의 최고 계열도 대표 케이스만 CFD로 확인 |
+| `flap_sep_warn` | 0.3 | 남은 형상의 추정 플랩 박리 비율 중앙값이 이보다 크면 경고 |
 | `prune_aoa`, `aoa_margin` | true, 2.0 | 실속 이후 받음각 제외 여부와 여유각 |
 | `sep_limit` | 0.10 | 실속 판정 박리 구간 비율 |
 | `transition` | `"turbulent"` | `"free"`면 Michel 기준 자연 천이 |
@@ -400,13 +454,39 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 | `ground_far_size` | 0.5 | (지면 있을 때) inlet/outlet/top 근처 셀 크기 [메인 코드] |
 | `min_quality` | 0.05 | 최소 셀 품질 (삼각형 SICN, 사각형 scaled Jacobian). 미달 시 경계층을 얇게 해서 재시도 |
 | `timeout` | 300 | 형상 하나의 메쉬 생성 제한 시간 [s]. 메쉬는 별도 프로세스에서 만들고, 넘으면 그 형상만 실패 처리하고 다음 형상으로 넘어감 (0 = 제한 없음) |
+| `refine` | 1.0 | 메쉬 전체 세분화 비율 (메쉬 독립성 확인용). 1.5면 모든 셀 크기·첫 셀 높이 ÷1.5, 표면·뒷전 셀 수 ×1.5, 경계층 성장률^(1/1.5). 슬롯·지면 통로·뒷전 세분화도 같은 비율 |
 
 경계 이름은 `main`, `flap1`, `flap2`(wall)와, 지면이 있으면 `ground`(wall), `inlet`(velocity-inlet), `outlet`(pressure-outlet), `top`(symmetry), 지면이 없으면 `farfield`(pressure-far-field, `farfield_split = true`면 `inlet` + `outlet`, `farfield_shape = "box"`면 앞·위·아래 `inlet` + 뒤 `outlet`)입니다. 메쉬 폴더의 `mesh_domain.png`로 전체 영역 모양을 확인할 수 있습니다. 셀 영역은 `fluid`입니다. 같은 구성(2단 또는 3단) 안에서는 이름이 같아서 Fluent에서 메쉬만 교체해도 설정이 유지됩니다. 슬롯마다(메인↔플랩1, 플랩1↔플랩2) 그 슬롯의 최소 간격 기준으로 세분화합니다.
 `[mesh]` 항목과 같은 이름의 케이스 변수가 있으면 케이스 값이 우선합니다. 단 `reynolds`는 형상 안에서 가장 큰 값을 써서 속도가 달라도 메쉬를 공유합니다.
 
 **좌표 파일 정리 (자동):** UIUC 같은 좌표 파일은 그대로 쓰면 메쉬가 실패하는 경우가 있어 읽을 때 두 가지를 고칩니다. (1) 뒷전 두 끝점 간격이 0.0005c 미만이면(반올림으로 생긴 틈, 예: S1221) 뾰족한 뒷전으로 닫습니다. (2) 뾰족한 뒷전 바로 앞 윗면·아랫면 점의 쐐기각이 1° 미만이면(칼날형 뒷전, 예: S4180) 그 점 쌍을 지웁니다. 이 처리가 없으면 (1)은 셀 품질 미달, (2)는 gmsh가 멈추는 원인이 됩니다. NACA 4자리 공식 형상은 바뀌지 않습니다.
 
-메쉬 독립성은 기준 형상 하나로 `surface_cells`, `near_size` 등을 2~3단계 바꿔 Cl/Cd가 수렴하는지 확인한 뒤, 최적화 동안에는 설정을 고정하는 것을 권장합니다. 설정이 같아야 형상 간 비교에서 메쉬 차이로 생기는 노이즈가 줄어듭니다.
+**동시 생성과 재현성:** `aero-auto mesh`는 CPU 코어 수만큼(기본 최대 8개, 작업 프로세스당 메모리 약 300 MB) 메쉬를 동시에 만듭니다(`-j`로 지정). 예제(4코어)에서 순차 대비 약 3.4배 빠릅니다. 형상마다 새 작업 프로세스에서 시간 제한을 두고 만들기 때문에 한 형상이 멈추거나 실패해도 나머지는 계속 만듭니다. 새 프로세스를 쓰는 이유는 재현성입니다. gmsh는 한 프로세스 안에서 앞서 만든 메쉬에 따라 같은 설정이어도 셀이 조금씩 달라지지만(예제 형상에서 73,452 → 73,454 → 73,406), 새 프로세스의 첫 메쉬는 항상 같습니다. 그래서 만드는 순서, 동시 개수, 팀원 분담(`--part`)과 관계없이 같은 메쉬가 나옵니다.
+
+**품질:** `mesh_info.json`에 gmsh 품질(`min_quality`)과 함께 **Fluent와 같은 정의의 직교 품질**(`min_orthogonal_quality`, `Mesh > Quality`의 Minimum Orthogonal Quality)과 0.1 미만 셀 수를 기록합니다. `check`가 전체 메쉬의 최솟값을 보여주고 0.1 미만이면 경고, 0.01 미만이면 오류로 표시합니다.
+
+### 메쉬 독립성 확인 (`mesh_level`, `refine`, `gci`)
+
+같은 케이스를 메쉬 3단계로 풀어 Cl, Cd가 메쉬에 따라 얼마나 바뀌는지 보고, 본 배치 메쉬의 이산화 불확실성(GCI)을 구합니다. 예제: `examples/flap_optimization/mesh_study.toml` (2단·3단 각 1개 형상 × 받음각 4°·12° × 3단계 = 12 케이스, 결과 `runs_mesh/`).
+
+```bash
+aero-auto -c mesh_study.toml mesh
+```
+
+```bash
+aero-auto -c mesh_study.toml run
+```
+
+```bash
+aero-auto -c mesh_study.toml gci
+```
+
+- **단계 지정:** `[cases.sweep] mesh_level = [1, 2, 3]`과 `[derived] refine = "1.5 ** (mesh_level - 2)"`. `[mesh]` 항목과 같은 이름의 케이스 변수는 케이스 값이 우선하므로 단계마다 `refine`이 0.67 / 1 / 1.5가 되고, 2단계는 본 배치와 같은 메쉬입니다. 케이스 변수 `mesh_level`이 있으면 메쉬 이름 끝에 `_m<단계>`가 붙어 단계별로 따로 만들어집니다.
+- **이름 충돌 방지:** `mesh_level` 없이 케이스마다 `[mesh]` 항목(`refine`, `surface_cells` 등)을 바꾸면, 이름이 같은 메쉬를 공유해 엉뚱한 메쉬로 계산되므로 케이스를 만들 때 오류로 멈춥니다.
+- **`gci` 계산 (Celik et al. 2008):** 메쉬 단계만 다르고 나머지 변수가 같은 케이스끼리 묶고, 셀 수로 대표 셀 크기 h = N^(-1/2)를 정한 뒤 Cl, Cd(요소별 `cl-main`, `cl-flap1` 등 포함)마다 관측 차수 p, 셀 크기 0으로 외삽한 값, GCI(조밀·보통 메쉬), 수렴 형태(`monotonic` / `oscillatory` / `divergent`)를 `runs_mesh/mesh_study/gci.csv`와 그룹별 `gci_*.png`에 남깁니다.
+- **판단 예:** 보통(본 배치) 메쉬의 GCI가 Cl 2%, Cd 5% 이내면 설정 그대로 진행. 넘으면 `project.toml`의 `[mesh] refine = 1.3`처럼 전체를 조밀하게 하고 다시 확인합니다. 단조 수렴이 아니면 먼저 반복 수렴(`conv_state`)을 확인하세요.
+
+최적화 동안에는 메쉬 설정을 고정하세요. 설정이 같아야 형상 간 비교에서 메쉬 차이로 생기는 노이즈가 줄어듭니다.
 
 ## Fluent 베이스 케이스 만들기 (최초 1회, 2단·3단 각각)
 
@@ -451,17 +531,17 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
    - 2단: `4412c375_4412c115d20g6o5_inv_h30_a4` (메인 375 mm + 플랩 115 mm, 뒤집힌 날개, 지상고 30 mm, 받음각 4°)
    - 3단: `4412c375_4412c80d25g6o5_4412c80d35g8o3_inv_h30_a4` (메인 375 mm + 플랩 80 mm × 2, 지상고 30 mm, 받음각 4°)
 2. 위 순서로 베이스 케이스를 만든 뒤 `File > Replace Mesh`로 같은 구성의 다른 메쉬로 바꿔도 경계조건, 리포트, 뷰가 유지되는지 확인합니다.
-3. 케이스 하나씩 배치로 돌려봅니다 (`--all`은 스크리닝 결과와 상관없이 실행):
+3. `aero-auto check`로 베이스 케이스·메쉬·저널을 점검한 뒤, 케이스 하나씩 배치로 돌려봅니다. 스크리닝에서 남은 형상(메쉬 독립성 확인과 같은 형상)이라 결과가 본 배치에 그대로 쓰입니다:
 
    ```bash
-   aero-auto run --all --only "2el_4412c375_f115d20g6_h30_v100_a4"
+   aero-auto run --only "2el_4412c375_f150d30g6_h30_v100_a4"
    ```
 
    ```bash
-   aero-auto run --all --only "3el_4412c375_f80d25_f80d35g8_h30_v100_a4"
+   aero-auto run --only "3el_4412c375_f150d25_f150d45g5_h30_v100_a4"
    ```
 
-4. `runs/2el_4412c375_h30/2el_4412c375_f115d20g6_h30_v100_a4/solver.log`에서 저널 명령이 오류 없이 실행됐는지, `img_*.png`가 저장됐는지 확인합니다.
+4. `runs/2el_4412c375_h30/2el_4412c375_f150d30g6_h30_v100_a4/transcript.txt`에서 저널 명령이 오류 없이 실행됐는지, `img_*.png`가 저장됐는지 확인합니다. Windows에서는 Fluent 출력이 `solver.log`가 아니라 이 transcript에 남습니다.
 
 저널(`journal.jou`)의 TUI 명령은 Fluent 버전에 따라 프롬프트가 다를 수 있습니다. 오류가 나면 GUI에서 `File > Write > Start Journal`로 같은 작업을 녹화해 해당 줄을 교체하세요. 특히 `/file/replace-mesh`, `/define/named-expressions/edit`, `/report/reference-values/...`, `/display/save-picture` 부분을 확인하면 됩니다.
 
@@ -473,7 +553,8 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 | `runs/ranking.csv` | 형상별 최대 Cl과 그때 받음각, 최대 L/D와 그때 받음각·Cl·Cd. `objective` 기준 정렬 (`split_by` 조건별 순위, 2단·3단 함께 비교) |
 | `runs/plots/*.png` | 형상별 Cl-α, Cd-α, L/D-α, 극곡선 (`split_by`가 있으면 조건별 폴더), `by_<조건>.png` |
 | `runs/_meshes/<형상>/` | `geometry.png`, `mesh.png`, `mesh_slot1.png`(, `mesh_slot2.png`), `mesh_le.png`, `mesh_domain.png`(전체 영역), `mesh_info.json` |
-| `runs/<그룹>/<케이스>/` | `convergence.png`(리포트 수렴 이력), `img_*.png`(Fluent 컨투어), `solver.log`, `result.cas.h5` |
+| `runs/<그룹>/<케이스>/` | `convergence.png`(리포트 수렴 이력), `img_*.png`(Fluent 컨투어), `transcript.txt`(Fluent 출력, Windows `-hidden` 실행의 오류·잔차는 여기), `solver.log`(표준 출력), `result.cas.h5` |
+| `runs_mesh/mesh_study/` | `gci.csv`, `gci_*.png` (메쉬 독립성 확인, `mesh_study.toml`) |
 
 결과값은 마지막 `average_last`개 iteration의 평균입니다(`average_last_oscillating`을 주면 진동 판정 케이스만 그 개수로 평균, 실제 개수는 `avg_iters`). 진동하며 수렴하는 경우를 대비한 것으로, `summary.csv`의 `conv_state`와 `convergence.png`로 수렴 여부를 함께 확인하세요.
 
@@ -506,4 +587,4 @@ pip install -e ".[dev]"
 pytest
 ```
 
-실제 Fluent 대신 가짜 솔버(`tests/fake_solver.py`, `tests/fake_airfoil_solver.py`)로 CST 피팅·얇은 익형 이론 α0, 수렴 상태 판정(진동 500회 평균, y+ 기록, 발산 건수), 형상 단위 분할, 단일 익형 데이터셋 생성부터 세 모델 학습·조건별 평가(부트스트랩 신뢰구간, 90% 구간 포함률)와 실행 간 비교, Transition SST 비교, 경계 사례 선정까지의 흐름과 2단·3단 형상 배치 정확도(mm 단위 갭), Fluent 메쉬 면 방향 규칙, 패널법 이론값, 케이스 세트, 세트·속도별 스크리닝 선별과 실행 반영, 메쉬 생성부터 해석, cl/cd 변환, 순위, 그래프까지의 전체 흐름을 검증합니다.
+실제 Fluent 대신 가짜 솔버(`tests/fake_solver.py`, `tests/fake_airfoil_solver.py`, 테스트 안의 transcript·메쉬 단계용 가짜 솔버)로 실행 전 점검(`check`: 베이스 케이스·메쉬·경계 이름·저널·한글 경로·시간 추정), transcript 오류 검출과 이전 결과 정리, 메쉬 동시 생성, Fluent 정의 직교 품질, `refine`·`mesh_level` 메쉬 단계와 GCI(해석해로 검증한 관측 차수·외삽값), 값 커버리지 스팟 체크와 실행 우선순위, 4단(플랩 3개) 형상·메쉬, CST 피팅·얇은 익형 이론 α0, 수렴 상태 판정(진동 500회 평균, y+ 기록, 발산 건수), 형상 단위 분할, 단일 익형 데이터셋 생성부터 세 모델 학습·조건별 평가(부트스트랩 신뢰구간, 90% 구간 포함률)와 실행 간 비교, Transition SST 비교, 경계 사례 선정까지의 흐름과 2단·3단 형상 배치 정확도(mm 단위 갭), Fluent 메쉬 면 방향 규칙, 패널법 이론값, 케이스 세트, 세트·속도별 스크리닝 선별과 실행 반영, 메쉬 생성부터 해석, cl/cd 변환, 순위, 그래프까지의 전체 흐름을 검증합니다.
