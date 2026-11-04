@@ -47,7 +47,8 @@ class MeshSettings:
     farfield_size: float = 5.0    # (circle) 원거리 경계 셀 크기 [c]
     farfield_split: bool = False  # (circle) true면 앞쪽 반원 inlet(velocity-inlet) +
                                   # 뒤쪽 반원 outlet(pressure-outlet)으로 나눔 (밀도 일정 비압축 해석용)
-    # (box) 직사각형 인클로저: 앞·위·아래 = inlet(velocity-inlet), 뒤 = outlet(pressure-outlet)
+    # (box) 직사각형 인클로저: 앞 = inlet(velocity-inlet), 위·아래 = top·bottom(wall,
+    #       Fluent에서 미끄럼 벽 = Specified Shear 0), 뒤 = outlet(pressure-outlet)
     box_upstream: float = 20.0    # 앞전 ~ inlet(앞 경계) 거리 [c]
     box_downstream: float = 40.0  # 앞전 ~ outlet(뒤 경계) 거리 [c]
     box_height: float = 20.0      # 시위선 ~ 위쪽/아래쪽 경계 거리 [c] (전체 높이는 2배)
@@ -116,6 +117,9 @@ class MeshJob:
         for key, default in _ADDED_DEFAULTS.items():
             if settings.get(key) == default:
                 settings.pop(key)
+        if settings.get("farfield_shape") == "box":
+            # box 위·아래 경계를 inlet → wall(top/bottom)로 바꾼 뒤의 메쉬. 예전 box 메쉬는 다시 만든다
+            settings["box_bc"] = "top_bottom_wall"
         payload = json.dumps([self.geometry_params, settings], sort_keys=True, default=str)
         return hashlib.sha1(payload.encode()).hexdigest()[:12]
 
@@ -209,9 +213,8 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
 
     ground_y = geom.info.get("ground_y")
     if ground_y is None and s.farfield_shape == "box":
-        # 자유류 직사각형 인클로저: 받음각은 inlet 속도 성분으로 주므로 유동이 아래 경계로 들어와
-        # 위 경계로 나간다. 그래서 앞·위·아래를 모두 inlet(velocity-inlet, 자유류 속도 지정)으로 두고
-        # 뒤만 outlet(pressure-outlet)으로 한다.
+        # 자유류 직사각형 인클로저: 앞 = inlet(velocity-inlet), 위·아래 = top·bottom(wall,
+        # Fluent 베이스 케이스에서 미끄럼 벽 = Specified Shear 0으로 설정), 뒤 = outlet(pressure-outlet)
         far_size = s.box_far_size / f
         grow = 0.5 * min(s.box_upstream, s.box_height)
         x0, x1 = -s.box_upstream, s.box_downstream
@@ -219,7 +222,8 @@ def _build_gmsh_model(geom: Geometry, s: MeshSettings, bl_thickness: float):
         c = [geo.addPoint(x, y, 0, lc) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
         bottom, right, top, left = (geo.addLine(c[i], c[(i + 1) % 4]) for i in range(4))
         outer_loop = geo.addCurveLoop([bottom, right, top, left])
-        outer = {"inlet": ([left, top, bottom], "velocity-inlet"), "outlet": ([right], "pressure-outlet")}
+        outer = {"inlet": ([left], "velocity-inlet"), "top": ([top], "wall"),
+                 "bottom": ([bottom], "wall"), "outlet": ([right], "pressure-outlet")}
     elif ground_y is None:
         # 자유류: 원형 원거리 경계 하나 (pressure-far-field)
         R = s.farfield_radius

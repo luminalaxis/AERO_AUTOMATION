@@ -158,11 +158,20 @@ def test_box_enclosure_mesh(tmp_path):
                    {"farfield_shape": "box", "box_upstream": 10, "box_downstream": 20, "box_height": 8,
                     "box_far_size": 1.0, "surface_cells": 80, "near_size": 0.03, "wake_size": 0.03}, tmp_path)
     info = generate_mesh(job, tmp_path)
-    assert set(info["zones"]) == {"interior-fluid", "main", "inlet", "outlet"}
+    assert set(info["zones"]) == {"interior-fluid", "main", "inlet", "outlet", "top", "bottom"}
+    # 앞 변만 inlet, 위·아래 변은 wall (top/bottom), 뒤 변은 outlet
+    msh = read_msh(job.mesh_file)
+    nodes = msh["nodes"]
+    zone = {name: (zid, bc) for zid, (bc, name) in msh["names"].items()}
+    for name, bc, axis, pos in (("inlet", "velocity-inlet", 0, -10), ("top", "wall", 1, 8),
+                                ("bottom", "wall", 1, -8), ("outlet", "pressure-outlet", 0, 20)):
+        zid, zone_bc = zone[name]
+        assert zone_bc == bc
+        pts = np.array([nodes[n - 1] for f in msh["zones"][zid] for n in msh["faces"][f][:2]])
+        np.testing.assert_allclose(pts[:, axis], pos * 0.3, atol=1e-9)
     check = check_msh(job.mesh_file)
     assert not check["bad_cells"] and not check["open_cells"]
     # 직사각형 영역: x −10c ~ 20c, y ±8c (코드 0.3 m → m 단위)
-    nodes = read_msh(job.mesh_file)["nodes"]
     np.testing.assert_allclose(nodes.min(0), [-10 * 0.3, -8 * 0.3], atol=1e-9)
     np.testing.assert_allclose(nodes.max(0), [20 * 0.3, 8 * 0.3], atol=1e-9)
     assert (job.dir / "mesh_domain.png").is_file()
