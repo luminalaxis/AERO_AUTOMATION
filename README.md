@@ -598,7 +598,7 @@ aero-auto -c mesh_study.toml gci
 | 섹션 | 내용 |
 |---|---|
 | `[project]` | `template`(저널), `output_dir`, `max_parallel` |
-| `[solver]` | `executable`(비우면 `AWP_ROOTxxx` 환경변수로 자동 탐색), `mode`(2ddp), `processes`, `graphics`(이미지 저장), `timeout_minutes`, `extra_args` |
+| `[solver]` | `executable`(비우면 `AWP_ROOTxxx` 환경변수 → PATH → `C:\Program Files\ANSYS Inc\v*` 순서로 자동 탐색), `mode`(2ddp), `processes`, `graphics`(이미지 저장), `timeout_minutes`, `extra_args` |
 | `[constants]` | 공통 값 |
 | `[cases]` | `csv`(행 단위 케이스, 선택), `name`(케이스 폴더 이름 패턴), `group`(분류 폴더 패턴) |
 | `[cases.sweep]` | 전체 조합 변수 (세트가 있으면 모든 세트에 공통 적용) |

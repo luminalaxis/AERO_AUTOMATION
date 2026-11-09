@@ -129,8 +129,35 @@ def ensure_meshes(cfg: ProjectConfig, cases: list[Case], force: bool = False,
     return errors
 
 
+def _version_key(path: Path) -> int:
+    m = re.search(r"[\\/]v(\d+)[\\/]", str(path))
+    return int(m.group(1)) if m else -1
+
+
+def _standard_fluent_installs() -> list[Path]:
+    """AWP_ROOTxxx 가 없을 때 찾아볼 표준 설치 위치 (최신 버전 먼저).
+
+    환경변수는 설치한 계정에만 등록되거나, 설치 후 새로 연 터미널이 아니면 안 보일 수 있다.
+    """
+    if IS_WINDOWS:
+        bases = {os.environ.get(k) for k in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)")}
+        bases.add(r"C:\Program Files")
+        rel = ("fluent", "ntbin", "win64", "fluent.exe")
+    else:
+        bases = {"/usr/ansys_inc", "/ansys_inc", "/opt/ansys_inc"}
+        rel = ("fluent", "bin", "fluent")
+    found: set[Path] = set()
+    for base in filter(None, bases):
+        for top in (Path(base, "ANSYS Inc"), Path(base, "ANSYS Inc", "ANSYS Student"), Path(base)):
+            for ver in top.glob("v[0-9]*") if top.is_dir() else ():
+                exe = ver.joinpath(*rel)
+                if exe.is_file():
+                    found.add(exe)
+    return sorted(found, key=_version_key, reverse=True)
+
+
 def find_fluent() -> str:
-    """AWP_ROOTxxx 환경변수(ANSYS 설치 시 자동 등록)에서 최신 버전 Fluent를 찾는다."""
+    """AWP_ROOTxxx 환경변수(ANSYS 설치 시 자동 등록) → PATH → 표준 설치 폴더 순서로 최신 Fluent를 찾는다."""
     roots = sorted(
         ((int(m.group(1)), v) for k, v in os.environ.items() if (m := re.fullmatch(r"AWP_ROOT(\d+)", k))),
         reverse=True,
@@ -146,6 +173,9 @@ def find_fluent() -> str:
     found = shutil.which("fluent")
     if found:
         return found
+    installs = _standard_fluent_installs()
+    if installs:
+        return str(installs[0])
     raise ConfigError(
         "Fluent 실행 파일을 찾지 못했습니다. project.toml의 [solver] executable에 경로를 지정하세요.\n"
         r"  예) C:\Program Files\ANSYS Inc\v261\fluent\ntbin\win64\fluent.exe"

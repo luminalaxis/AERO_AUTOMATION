@@ -132,7 +132,7 @@ def run_checks(cfg: ProjectConfig, cases: list[Case], parallel: int | None = Non
             label = _set_label(cs)
             if path in missing:
                 add(TODO, f"베이스 케이스 만들기: {path.name}",
-                    f"{label}케이스 {len(cs)}개가 읽음. 베이스 케이스 문서(docs/FLUENT_BASE_CASE.md, 단일 익형은 "
+                    f"{label}케이스 {len(cs)}개가 이 파일을 읽음. 베이스 케이스 문서(docs/FLUENT_BASE_CASE.md, 단일 익형은 "
                     f"FLUENT_BASE_CASE_AIRFOIL.md) 순서로 만들어 {path.parent} 에 저장")
             else:
                 add(OK, f"베이스 케이스 있음: {path.name}", f"{label}케이스 {len(cs)}개")
@@ -146,11 +146,12 @@ def run_checks(cfg: ProjectConfig, cases: list[Case], parallel: int | None = Non
             add(OK if exe.is_file() else ERROR, "Fluent 실행 파일" + ("" if exe.is_file() else " 없음"), str(exe))
         else:
             try:
-                add(OK, "Fluent 실행 파일 (AWP_ROOT 자동 탐색)", find_fluent())
+                add(OK, "Fluent 실행 파일 (자동 탐색)", find_fluent())
             except ConfigError:
                 add(ERROR, "Fluent 실행 파일을 찾지 못함",
-                    "AWP_ROOTxxx 환경변수에도 PATH에도 없습니다. ANSYS가 설치된 PC에서 실행하거나 "
-                    "project.toml의 [solver] executable에 fluent.exe 경로를 지정하세요.")
+                    "AWP_ROOTxxx 환경변수, PATH, 표준 설치 폴더(C:\\Program Files\\ANSYS Inc\\v*) 어디에도 없습니다. "
+                    "ANSYS가 설치된 PC에서 실행하거나 project.toml의 [solver] executable에 fluent.exe 경로를 "
+                    "지정하세요. 예) executable = 'C:\\Program Files\\ANSYS Inc\\v251\\fluent\\ntbin\\win64\\fluent.exe'")
         cores = os.cpu_count() or 1
         want = cfg.solver.processes * max(1, parallel or cfg.max_parallel)
         if want > cores:

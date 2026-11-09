@@ -1,4 +1,5 @@
 """Fluent 실행 전 점검(aero-auto check)과 배치 실행 안전장치 (transcript, 이전 결과 정리, 남은 시간)."""
+import os
 import json
 import textwrap
 from pathlib import Path
@@ -159,3 +160,21 @@ def test_check_uses_finished_cases_for_estimates(tmp_path):
     detail = " ".join(it.detail for it in items)
     assert "케이스당 5.0분(끝난 1개 중앙값)" in detail
     assert "끝난 케이스 폴더 크기 중앙값" in detail
+
+
+def test_find_fluent_falls_back_to_standard_install(tmp_path, monkeypatch):
+    from aero_automation import runner
+
+    for k in list(os.environ):
+        if k.startswith("AWP_ROOT"):
+            monkeypatch.delenv(k)
+    monkeypatch.setattr(runner.shutil, "which", lambda name: None)
+    monkeypatch.setattr(runner, "IS_WINDOWS", True)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    for env in ("ProgramW6432", "ProgramFiles(x86)"):
+        monkeypatch.delenv(env, raising=False)
+    for ver in ("v232", "v251"):
+        exe = tmp_path / "ANSYS Inc" / ver / "fluent" / "ntbin" / "win64" / "fluent.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("")
+    assert runner.find_fluent().endswith(str(Path("v251", "fluent", "ntbin", "win64", "fluent.exe")))
