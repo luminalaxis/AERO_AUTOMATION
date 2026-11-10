@@ -182,7 +182,10 @@ def test_flap_pipeline_end_to_end(tmp_path, capsys):
 
     with open(cfg.output_dir / "ranking.csv", encoding="utf-8-sig") as f:
         ranking = list(csv.DictReader(f))
-    assert [row["flap1_gap"] for row in ranking][0] == "0.02"  # 가상 해석에서 갭 0.02가 최적
+    # 형상(갭)마다 한 줄: flow_angle(= 받음각)이 형상 변수로 잡히면 받음각마다 줄이 생긴다
+    assert len(ranking) == 3
+    # 가상 해석에서 갭 0.02가 최적, 0.02에서 멀어질수록 Cl이 줄어든다
+    assert [row["flap1_gap"] for row in ranking] == ["0.02", "0.015", "0.03"]
     assert ranking[0]["rank"] == "1"
     for f in ("cl_alpha.png", "cd_alpha.png", "ld_alpha.png", "polar.png"):
         assert (cfg.output_dir / "plots" / f).is_file()

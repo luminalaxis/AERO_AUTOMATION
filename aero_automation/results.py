@@ -155,10 +155,10 @@ def _write_csv(path: Path, rows: list[dict]) -> Path:
 
 
 def geometry_keys(cfg: ProjectConfig, cases: list[Case]) -> list[str]:
-    """형상을 구분하는 변수: 케이스마다 값이 다른 변수 중 받음각/파생 변수를 뺀 것."""
+    """형상을 구분하는 변수: 케이스마다 값이 다른 변수 중 받음각(과 받음각에서 정해지는 flow_angle)/파생 변수를 뺀 것."""
     keys = []
     for k in cases[0].params:
-        if k == cfg.results.x_param or k in cfg.derived:
+        if k in (cfg.results.x_param, "flow_angle") or k in cfg.derived:
             continue
         if len({repr(c.params.get(k)) for c in cases}) > 1:
             keys.append(k)
