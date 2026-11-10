@@ -308,38 +308,3 @@ def plot_condition_trend(ranking: list[dict], cond_key: str, geo_keys: list[str]
     ax.grid(alpha=0.3)
     ax.legend(fontsize=7)
     return _save(fig, path)
-
-
-def plot_edge_case(curve: list[dict], case: dict, model: str, path: Path, title: str = "",
-                   pi_label: str = "PI") -> Path:
-    """경계 사례 1건: 같은 형상·Re의 CL-α, log10 CD-α.
-
-    CFD(SST) 정답(채움 = converged, 빈 원 = oscillating), 모델 예측과 예측 구간, Transition SST 정답(있으면),
-    고른 받음각(회색 점선)과 CFD CL 최대 받음각(초록 점선).
-    """
-    curve = sorted(curve, key=lambda r: r["aoa"])
-    aoa = np.array([r["aoa"] for r in curve])
-    fig, axes = plt.subplots(1, 2, figsize=(11, 3.9))
-    for ax, target, label in zip(axes, ("cl", "log10_cd"), ("CL", "log10 CD")):
-        lo = [r.get(f"{model}_{target}_lo") for r in curve]
-        hi = [r.get(f"{model}_{target}_hi") for r in curve]
-        if all(v is not None for v in lo + hi):
-            ax.fill_between(aoa, np.array(lo, float), np.array(hi, float), color="C0", alpha=0.18, lw=0,
-                            label=f"{model} {pi_label}")
-        ax.plot(aoa, [r[f"{model}_{target}"] for r in curve], "-", color="C0", lw=1.3, label=f"{model} prediction")
-        for state, face in (("converged", "k"), ("oscillating", "none")):
-            pts = [(r["aoa"], r[target]) for r in curve if r["conv_state"] == state]
-            if pts:
-                ax.plot(*zip(*pts), "o", color="k", mfc=face, ms=4.5, label=f"CFD SST ({state})")
-        tsst = [(r["aoa"], r[f"{target}_tsst"]) for r in curve if r.get(f"{target}_tsst") is not None]
-        if tsst:
-            ax.plot(*zip(*tsst), "s", color="C3", mfc="none", ms=6, label="CFD Transition SST")
-        ax.axvline(case["aoa"], color="0.45", ls="--", lw=1)
-        if case.get("aoa_clmax") is not None:
-            ax.axvline(case["aoa_clmax"], color="C2", ls=":", lw=1.2, label="CL max (CFD)")
-        ax.set_xlabel("aoa [deg]")
-        ax.set_ylabel(label)
-        ax.grid(alpha=0.3)
-    axes[0].legend(fontsize=7, loc="best")
-    fig.suptitle(title, fontsize=9)
-    return _save(fig, path)

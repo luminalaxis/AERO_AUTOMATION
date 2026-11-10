@@ -71,7 +71,6 @@ class ProjectConfig:
     solver: SolverConfig
     results: ResultsConfig
     convergence: dict | None = None  # [convergence] 수렴 판정 기준 (convergence.py)
-    ml: dict | None = None           # [ml] 데이터셋 분할·학습 설정 (dataset.py, learn.py)
 
     @property
     def root(self) -> Path:
@@ -134,5 +133,4 @@ def load_config(path: str | Path) -> ProjectConfig:
         solver=solver,
         results=results,
         convergence=data.get("convergence"),
-        ml=data.get("ml"),
     )

@@ -132,8 +132,8 @@ def run_checks(cfg: ProjectConfig, cases: list[Case], parallel: int | None = Non
             label = _set_label(cs)
             if path in missing:
                 add(TODO, f"베이스 케이스 만들기: {path.name}",
-                    f"{label}케이스 {len(cs)}개가 읽음. 베이스 케이스 문서(docs/FLUENT_BASE_CASE.md, 단일 익형은 "
-                    f"FLUENT_BASE_CASE_AIRFOIL.md) 순서로 만들어 {path.parent} 에 저장")
+                    f"{label}케이스 {len(cs)}개가 읽음. 베이스 케이스 문서(docs/FLUENT_BASE_CASE.md) "
+                    f"순서로 만들어 {path.parent} 에 저장")
             else:
                 add(OK, f"베이스 케이스 있음: {path.name}", f"{label}케이스 {len(cs)}개")
 

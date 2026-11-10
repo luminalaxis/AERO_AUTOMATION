@@ -8,7 +8,7 @@
 2D **다요소 날개(메인 + 슬롯 플랩 1~2개, 최대 3개)** 형상 최적화를 위한 ANSYS Fluent 배치 해석 자동화 도구입니다. 예제는 **지면 효과를 받는 다운포스용 뒤집힌 날개**(움직이는 바닥, 지상고 30~60 mm)이고, 형상 순위 기준은 **최대 다운포스**(`objective = "max_cl"`)입니다.
 2단(메인 + 플랩 1개)·3단(메인 + 플랩 2개) 구성의 형상(익형, 요소별 코드 길이, 플랩 각도, 갭, 오버랩) × 지상고 × 받음각 × 속도 케이스를 만들고, **저충실도 해석으로 가망 없는 케이스를 미리 걸러낸 뒤**, 형상마다 메쉬를 자동 생성해 Fluent로 돌리고 Cl/Cd 정리, 형상 순위, 이미지 저장까지 한 번에 처리합니다.
 
-두 번째 예제(`examples/airfoil_dataset`)는 **단일 익형 120개 × 받음각 14개 × Re 2개 = 3,360 케이스**로 양항계수 데이터셋을 만들고, CST 형상 계수를 입력으로 하는 **CL·CD 회귀 모델(얇은 익형 이론 기준 / LightGBM / MLP 앙상블)을 학습·평가**합니다. 아래 ["예제 2: 단일 익형 데이터셋과 회귀 모델"](#예제-2-단일-익형-데이터셋과-회귀-모델)을 보세요.
+단일 익형 양항계수 데이터셋과 CL·CD 회귀 모델(CST 형상 계수 입력, LightGBM / MLP)은 별도 레포 [`airfoil_surrogate`](https://github.com/luminalaxis/airfoil_surrogate)로 옮겼습니다.
 
 ```
 project.toml (2단/3단 세트, 형상·지상고·받음각·속도 스윕)
@@ -40,12 +40,6 @@ pip install -e .
 ```
 
 numpy, matplotlib, gmsh가 함께 설치됩니다. gmsh는 pip 패키지에 실행 파일이 포함돼 있어 따로 설치할 필요 없습니다.
-
-회귀 모델 학습(`aero-auto train`)까지 쓰려면 LightGBM과 PyTorch도 설치합니다.
-
-```bash
-pip install -e ".[ml]"
-```
 
 터미널에서 `aero-auto`를 실행하면 맨 위에 큰 글씨 로고 배너가 나오고, 색 조합은 실행할 때마다 무작위로 바뀝니다(명령 없이 `aero-auto`만 치면 배너 + 도움말). 출력을 파일로 넘기거나 파이프로 연결하면 배너는 자동으로 빠집니다. 끄려면 `--no-banner` 또는 환경 변수 `AERO_AUTO_NO_BANNER=1`, 색만 끄려면 `NO_COLOR=1`을 씁니다.
 터미널에서는 실행할 때 화면을 먼저 지우고(끄려면 `--no-clear` 또는 `AERO_AUTO_NO_CLEAR=1`), 도움말(`-h`)은 `usage:`·제목·명령 이름·옵션을 굵은 밝은 색으로 구분해 보여줍니다. 파일·파이프로 넘기면 지우지도, 색을 넣지도 않습니다.
@@ -163,68 +157,7 @@ aero-auto run --priority
 `result.cas.h5`까지 저장하면 디스크 약 68 GB(result 파일을 셀당 200 B로 잡은 추정), 케이스당 3~10분이면 동시 1개 기준 7~24일입니다. 그래서 위 5번의 파일럿 시간으로 일정을 다시 잡고, 필요하면 `-j`(라이선스·코어),
 힘계수 수렴 조건(베이스 케이스 문서 8번), `--limit`로 나눠 실행을 조합하세요.
 
-## 예제 2: 단일 익형 데이터셋과 회귀 모델
-
-인공지능개론 텀프로젝트 기획서("CFD 없이 에어포일 양항계수를 예측하는 회귀 모델")의 데이터 생성부터 모델 평가까지를 담은 예제입니다.
-
-| 항목 | 내용 |
-|---|---|
-| 형상 | NACA 4자리 60개(공식 생성) + UIUC 60개(`airfoils.csv`). UIUC 중 **캠버 6.5% 이상 10개**(`family = high_camber`: s1223, s1210, e423, ch10sm, fx74cl5140, mh114, dae11, dae21, goe226, e591)는 학습에서 빼고 "처음 보는 형상" 평가에만 씀 |
-| 받음각 | −4, −2, 0, 2, 4, 6, 8, 10, 11~16° (14개, 실속 부근 1° 간격) |
-| Re | 2×10⁵, 5×10⁵ (코드 0.3 m 기준 유속 9.7, 24.3 m/s) |
-| 해석 | Fluent 2D 정상 상태 k-ω SST, 직사각형 영역(앞전 기준 앞 20c, 뒤 40c, 위·아래 20c, 앞 = inlet, 위·아래 = 미끄럼 벽(wall, Specified Shear 0), 뒤 = outlet), 형상당 메쉬 1개(약 5.2만 셀) |
-| 입력 → 목표 | CST 계수 16개(면당 8개) + 받음각 + log10(Re) → CL, log10(CD) |
-| 라벨 규칙 | 케이스마다 수렴 상태(`conv_state`)와 y+(`yplus_max`, `yplus_avg`) 기록. 수렴 케이스는 마지막 200회, 진동 케이스는 마지막 500회 반복 평균. 발산 케이스는 학습·평가에서 빼고 건수만 보고 |
-| 평가 | 조건별 MAE와 표본 수, 형상 단위 부트스트랩 95% 신뢰구간, 90% 예측 구간의 실제 포함률. 실행 간 비교는 공통 케이스만으로(`compare`), 경계 사례 10개(`edge-cases`) |
-
-### 순서
-
-```bash
-cd examples/airfoil_dataset
-```
-
-```bash
-aero-auto fetch-airfoils      # UIUC 좌표 60개를 airfoils/ 에 내려받음 (없는 것만)
-```
-
-```bash
-aero-auto plan --dry-run      # 3,360 케이스, 형상(메쉬) 120개
-```
-
-```bash
-aero-auto mesh                # 형상별 메쉬 (각 5~8초)
-```
-
-Fluent 베이스 케이스 `base_airfoil.cas.h5`를 만든 뒤([docs/FLUENT_BASE_CASE_AIRFOIL.md](docs/FLUENT_BASE_CASE_AIRFOIL.md)) 팀원 4명이 나눠 실행합니다.
-
-```bash
-aero-auto run --part 1/4      # 팀원별로 1/4 ~ 4/4. 형상 30개(840 케이스)씩, 같은 형상은 한 사람에게
-```
-
-각자의 `runs/<형상>/` 폴더를 한 `runs/`에 모은 뒤 정리합니다.
-
-```bash
-aero-auto collect --no-plots  # summary.csv (cl, cd, 수렴 상태)
-```
-
-```bash
-aero-auto dataset             # CST 계수 + 형상 단위 분할 → runs/dataset/
-```
-
-```bash
-aero-auto train               # 기준 방법 / LightGBM / MLP → runs/ml/cst16_h64x64/
-```
-
-```bash
-aero-auto edge-cases          # 경계 사례 10개 + 사례별 그래프 → runs/ml/cst16_h64x64/edge_cases_mlp/
-```
-
-실험 1·2와 14주차 개선 실험은 아래 "학습과 평가"의 표대로 학습한 뒤 `aero-auto compare`로 비교합니다.
-
-- UIUC 사이트에 접속이 안 되면 `coord_seligFmt.zip`(UIUC 전체 묶음)을 받아 `aero-auto fetch-airfoils --zip coord_seligFmt.zip`. 내려받은 `airfoils/*.dat`은 팀원이 같은 좌표를 쓰도록 커밋해 두는 것을 권장합니다.
-- `--part K/N`은 `plan`, `mesh`, `run`, `status`, `collect` 등 모든 명령에서 쓸 수 있습니다.
-
-### 수렴 상태 (`conv_state`)
+## 수렴 상태 판정 (`conv_state`)
 
 `collect`는 케이스마다 리포트 파일의 반복 이력(마지막 `[convergence] window`개)과 솔버 로그로 수렴 상태를 판정해 `summary.csv`에 넣습니다.
 
@@ -238,86 +171,8 @@ aero-auto edge-cases          # 경계 사례 10개 + 사례별 그래프 → ru
 함께 기록하는 열: `conv_cl_amp`, `conv_cd_amp`, `conv_cl_std`, `conv_cd_std`(진동 케이스의 정답 불확실성), `conv_cl_drift`, `conv_iters`, `res_continuity` 등 마지막 잔차. `convergence.png` 제목에도 상태가 붙습니다.
 `[convergence]` 설정은 모든 프로젝트에서 쓸 수 있습니다(기본: `window = 200`, `cl_tol = 0.005`, `cl_rel_tol = 0.01`, `cd_tol = 1e-4`, `cd_rel_tol = 0.02`, `max_abs_coef = 10`).
 
-- **결과값(정답)**: 마지막 `[results] average_last`(예제: 200)개 반복의 평균입니다. 진동 케이스는 `average_last_oscillating`(예제: 500)개로 더 길게 평균합니다(기획서 라벨 규칙). 실제로 평균에 쓴 반복 수는 `avg_iters` 열에 남습니다.
-- **y+**: 베이스 케이스의 리포트 `yplus-max`(벽면 y+ 최대), `yplus-avg`(면적 가중 평균)를 같은 리포트 파일에 넣으면 `summary.csv`의 `yplus-max`, `yplus-avg`와 `dataset.csv`의 `yplus_max`, `yplus_avg`로 기록됩니다([docs/FLUENT_BASE_CASE_AIRFOIL.md](docs/FLUENT_BASE_CASE_AIRFOIL.md) 9단계). `dataset`이 중앙값과 최대를 출력하고, 리포트가 없으면 경고합니다.
-- **발산**: `dataset`이 상태별 건수를 출력하고, `train`은 발산 케이스를 학습·평가에서 빼고 분할별 건수만 `metrics.csv`(`state=diverged`)에 남깁니다.
-
-### 데이터셋 (`aero-auto dataset` → `runs/dataset/`)
-
-| 파일 | 내용 |
-|---|---|
-| `dataset.csv` | 케이스 1건 = 1행. `cst16_u0..u7, cst16_l0..l7`(면당 8개), `cst8_u0..u3, cst8_l0..l3`(면당 4개, 실험 1용), `aoa`, `log10_re`, `cl`, `cd`, `log10_cd`, `conv_state`, `avg_iters`, `yplus_max`, `yplus_avg`, `near_stall`, `aoa_clmax`, `split`, 두께·캠버, 얇은 익형 이론 `alpha0_thin_deg`. Transition SST 결과가 있으면 `cl_tsst`, `log10_cd_tsst`, `d_cl_tsst`, `d_log10_cd_tsst`(T-SST − SST) |
-| `airfoils.csv` | 형상별 CST 계수, 피팅 오차(`cst16_rms`, `cst16_max_err`, 코드 기준), 두께·캠버와 위치, 뒷전 두께, 분할 |
-| `split.json` | 형상 → `train` / `val` / `test` / `test_ood`. 한 번 만들면 고정(새 형상만 추가 배정). 다시 섞으려면 `dataset --resplit` |
-| `cst_fits.png` | 피팅 오차가 가장 큰 형상 6개의 원래 좌표와 CST 재구성 비교 |
-
-- **CST**: 윗면·아랫면을 각각 `y = √x(1−x)·Σ Aᵢ·Bᵢ(x) + x·y_te`(번스타인 다항식)로 최소제곱 피팅합니다. 예제 120개 기준 최대 오차는 NACA 4자리 중앙값 0.0005c(최대 0.002c), UIUC 중앙값 0.001c이고, 좌표 점이 성긴 파일(naca23012, e603)은 앞전 부근에서 0.006c 정도입니다. 최대 오차가 0.005c를 넘으면 경고합니다.
-- **분할**: 같은 형상의 모든 받음각·Re 케이스는 같은 분할에 들어갑니다. `holdout_families` 계열은 `test_ood`로만, 나머지는 family(naca4 / uiuc)별로 `split` 비율(70/15/15)에 맞춰 나눕니다. 예제는 학습 77 / 검증 16~17 / 평가 16~17 / 처음 보는 형상 10개입니다.
-- **실속 부근**: 형상·Re별로 CL이 최대인 받음각(`aoa_clmax`, 학습에 쓰는 수렴 상태 케이스 기준) ± `near_stall_window`(2°)이면 `near_stall = 1`. 평가에서는 이보다 작은 받음각을 `attached`, 큰 받음각을 `post_stall`로 나눕니다.
-
-### 학습과 평가 (`aero-auto train` → `runs/ml/<이름>/`)
-
-| 모델 | 내용 |
-|---|---|
-| `baseline` | 얇은 익형 이론 CL = 2π(α − α0), α0는 형상의 캠버선에서 계산. log10 CD = 학습 데이터 평균 |
-| `lgbm` | LightGBM. 목표별 평균 모델 + 분위 회귀(5%, 95%) → 90% 예측 구간. 검증 손실로 조기 종료 |
-| `mlp` | PyTorch MLP(SiLU), 시드만 다른 5개 앙상블. 평균 = 예측, 앙상블 표준편차 × 1.645 → 90% 예측 구간 |
-
-`metrics.csv`에는 모델 × 분할(`val`, `test`, `test_ood`) × 조건마다 표본 수(`n`, `n_shapes`), `mae_cl`, `mae_log10_cd`, 90% 예측 구간 폭(`width90_*`)과 실제 포함률(`cover90_*`)이 들어가고, MAE와 포함률마다 **형상 단위 부트스트랩 95% 신뢰구간**(`*_lo95`, `*_hi95`)이 붙습니다. 같은 형상의 받음각·Re 케이스는 서로 독립이 아니므로 케이스가 아니라 형상을 복원 추출(2,000회)해 구간을 구합니다.
-조건은 `all`(학습에 쓰는 수렴 상태 전체), 유동 구간 `attached`(CL 최대 받음각 − 창보다 작은 받음각, 부착 유동)·`near_stall`(CL 최대 받음각 ± 창)·`post_stall`(+ 창보다 큰 받음각, 실속 후 박리 유동), `state=converged/oscillating`(수렴 상태별)이고, `state=diverged`는 건수(`n`)만 있습니다. 유동 구간은 CFD 정답(CL 최대 받음각)을 알아야 정해지므로 평가 조건으로만 쓰고 모델 입력에는 넣지 않습니다.
-`predictions.csv`는 케이스별 정답·예측·구간과 진동 폭, y+, Transition SST 정답(있으면), `run.json`은 설정과 MLP 앙상블 멤버별 조기 종료 지점입니다.
-`val`은 조기 종료에 쓰이므로 최종 보고에는 `test`와 `test_ood`를 쓰세요.
-
-기획서의 실험은 옵션으로 학습하고(결과 폴더 이름은 `--name`), `compare`로 같은 케이스끼리 비교합니다.
-
-| 실험 | 학습 | 비교 |
-|---|---|---|
-| 기본 비교 | `aero-auto train` | `aero-auto compare cst16_h64x64` (기준 방법 대비) |
-| 실험 1: 형상 계수 16개 vs 8개 | `aero-auto train --features cst8 --name exp1_cst8` | `aero-auto compare cst16_h64x64 exp1_cst8 --model lgbm mlp` |
-| 실험 2: MLP 은닉층 크기 3단계 | `aero-auto train --model mlp --hidden 32,32 --name exp2_small` / `--hidden 128,128,128 --name exp2_large` | `aero-auto compare cst16_h64x64 exp2_small exp2_large --model mlp` |
-| 개선 1: 실속 부근 학습 비중 | `aero-auto train --stall-weight 3 --name imp_stall3` | `aero-auto compare cst16_h64x64 imp_stall3 --model lgbm mlp` |
-| 개선 2: 처음 보는 계열 일부 학습 | `aero-auto train --ood-train-fraction 0.3 --name imp_ood30` | `aero-auto compare cst16_h64x64 imp_ood30 --model lgbm mlp` |
-
-`[ml]` 설정: `holdout_families`, `split`(3개 비율), `seed`, `near_stall_window`, `train_states`(학습·`all` 조건에 쓰는 수렴 상태, 기본 converged + oscillating), `cst_orders`(면당 계수 수 목록, 기본 `[8, 4]`), `shape_key`(형상 이름 변수, 기본 `airfoil`), `family_key`, `re_key`, `tsst_summary`(Transition SST 결과, 아래 참고).
-
-### 실행 간 비교 (`aero-auto compare` → `runs/ml/_compare/<이름>.csv`)
-
-기획서의 "모든 비교는 동일 분할·동일 지표로"를 지키도록, 여러 학습 결과를 **모든 실행에 공통인 평가 케이스(test, test_ood)만으로** 다시 계산합니다. 개선 2처럼 처음 보는 형상 일부를 학습에 넣은 실행과 비교해도 그 형상은 양쪽에서 모두 빠집니다.
-
-- 기준은 첫 번째 실행의 같은 모델입니다. 실행을 하나만 주면 그 실행의 첫 모델(기본: 기준 방법)이 기준입니다.
-- `d_mae_*` = MAE − 기준 MAE(음수 = 개선)와 **짝지은 형상 단위 부트스트랩 95% 신뢰구간**. 모든 모델에 같은 형상 재표집을 써서 차이의 구간을 구하고, 구간이 0을 포함하지 않으면 화면에 `*`를 붙입니다.
-- 실행 사이에 `dataset`을 다시 만들어 정답이나 분할이 달라진 케이스는 빼고 경고합니다.
-
-### 경계 사례 (`aero-auto edge-cases` → `runs/ml/<실행>/edge_cases_<모델>/`)
-
-```bash
-aero-auto edge-cases --run cst16_h64x64 --model mlp
-```
-
-평가 세트(test, test_ood)에서 경계 사례 10개를 골라 `edge_cases.csv`와 사례별 그래프(같은 형상·Re의 CL-α, log10 CD-α: CFD 정답, 모델 예측과 90% 예측 구간, Transition SST 정답)를 만듭니다.
-
-| 범주 | 고르는 케이스 | 개수 |
-|---|---|---|
-| `stall_pre` | 실속 직전: 받음각 범위 안에서 실속하는 형상·Re의 CL 최대 받음각 이하 (`near_stall`) | 대표 1 + 최악 1 |
-| `stall_post` | 실속 직후: CL 최대 받음각 초과 (`near_stall`) | 대표 1 + 최악 1 |
-| `turbulence` | SST와 Transition SST의 정답 차이가 큰 케이스 (`tsst_summary` 필요) | 2 |
-| `attached_test` | 부착 유동(`attached`), 평가 세트 | 대표 1 + 최악 1 |
-| `attached_ood` | 부착 유동, 처음 보는 형상 | 대표 1 + 최악 1 |
-
-- 오차 점수 = \|CL 오차\| / CL MAE + \|log10 CD 오차\| / log10 CD MAE (그 모델의 평가 세트 평균 오차의 몇 배인지). **최악**(실패 사례) = 점수 최대, **대표**(정상 사례) = 점수가 범주 중앙값에 가장 가까운 케이스. 같은 형상은 되도록 한 번만 고릅니다.
-- 난류 모델 차이도 같은 척도(모델 평균 오차 대비 배수, `tsst_diff_score`)로 순위를 매깁니다. 평가 분할(val, test, test_ood) 형상만 해당합니다.
-- `in_pi90_cl`, `in_pi90_log10_cd`: 정답이 90% 예측 구간 안인지(1/0). 오차가 큰데 구간도 넓으면 모델이 불확실성을 알린 실패, 구간이 좁으면 알리지 못한 실패입니다.
-
-### Transition SST 비교 (신뢰성 검증, 경계 사례)
-
-Re 2×10⁵ 케이스 일부를 Transition SST로 다시 풀고([docs/FLUENT_BASE_CASE_AIRFOIL.md](docs/FLUENT_BASE_CASE_AIRFOIL.md) 맨 아래), `project.toml`에 결과 위치를 적습니다.
-
-```toml
-[ml]
-tsst_summary = "runs_tsst/summary.csv"
-```
-
-`aero-auto dataset`이 이름이 같은 케이스끼리 짝지어 `cl_tsst`, `log10_cd_tsst`, `d_cl_tsst`, `d_log10_cd_tsst`(T-SST − SST)를 붙이고 Re별 차이(중앙값, 최대와 그 케이스)를 출력합니다. 이어서 `train` → `edge-cases`를 다시 실행하면 난류 모델 민감 사례가 채워집니다. Transition SST 정답은 학습에 쓰지 않습니다.
+- **결과값**: 마지막 `[results] average_last`개 반복의 평균입니다. 진동 케이스는 `average_last_oscillating`을 주면 그 개수로 더 길게 평균합니다. 실제로 평균에 쓴 반복 수는 `avg_iters` 열에 남습니다.
+- **y+**: 베이스 케이스의 리포트 `yplus-max`(벽면 y+ 최대), `yplus-avg`(면적 가중 평균)를 같은 리포트 파일에 넣으면 `summary.csv`의 `yplus-max`, `yplus-avg`로 기록됩니다.
 
 ## 형상 정의 (2단 / 3단)
 
@@ -610,8 +465,7 @@ aero-auto -c mesh_study.toml gci
 | `[mesh]` | 위 메쉬 설정. 섹션이 없으면 메쉬 생성 없이 기존 방식으로 동작 |
 | `[results]` | `report_files`, `average_last`, `average_last_oscillating`(진동 케이스 평균 개수), `x_param`, `wind_axes`, `objective`(`max_ld`/`max_cl`), `split_by`(조건별 분석 변수) |
 | `[screening]` | 스크리닝 설정 (위 표 참고) |
-| `[convergence]` | 수렴 상태 판정 기준 (예제 2 참고) |
-| `[ml]` | 데이터셋 분할·학습 설정 (예제 2 참고) |
+| `[convergence]` | 수렴 상태 판정 기준 (위 "수렴 상태 판정" 참고) |
 
 저널 템플릿에서 쓸 수 있는 변수는 모든 케이스 변수(`case_set`, `base_case` 등 포함)에 더해 `${case_name}`, `${group}`, `${case_dir}`, `${project_dir}`, `${nprocs}`, `${mesh_file}`, `${mesh_name}`입니다. 포맷 지정도 됩니다: `${aoa:.2f}`.
 
@@ -625,4 +479,4 @@ pip install -e ".[dev]"
 pytest
 ```
 
-실제 Fluent 대신 가짜 솔버(`tests/fake_solver.py`, `tests/fake_airfoil_solver.py`, 테스트 안의 transcript·메쉬 단계용 가짜 솔버)로 실행 전 점검(`check`: 베이스 케이스·메쉬·경계 이름·저널·한글 경로·시간 추정), transcript 오류 검출과 이전 결과 정리, 메쉬 동시 생성, Fluent 정의 직교 품질, `refine`·`mesh_level` 메쉬 단계와 GCI(해석해로 검증한 관측 차수·외삽값), 값 커버리지 스팟 체크와 실행 우선순위, 4단(플랩 3개) 형상·메쉬, CST 피팅·얇은 익형 이론 α0, 수렴 상태 판정(진동 500회 평균, y+ 기록, 발산 건수), 형상 단위 분할, 단일 익형 데이터셋 생성부터 세 모델 학습·조건별 평가(부트스트랩 신뢰구간, 90% 구간 포함률)와 실행 간 비교, Transition SST 비교, 경계 사례 선정까지의 흐름과 2단·3단 형상 배치 정확도(mm 단위 갭), Fluent 메쉬 면 방향 규칙, 패널법 이론값, 케이스 세트, 세트·속도별 스크리닝 선별과 실행 반영, 메쉬 생성부터 해석, cl/cd 변환, 순위, 그래프까지의 전체 흐름을 검증합니다.
+실제 Fluent 대신 가짜 솔버(`tests/fake_solver.py`, 테스트 안의 transcript·메쉬 단계용 가짜 솔버)로 실행 전 점검(`check`: 베이스 케이스·메쉬·경계 이름·저널·한글 경로·시간 추정), transcript 오류 검출과 이전 결과 정리, 메쉬 동시 생성, Fluent 정의 직교 품질, `refine`·`mesh_level` 메쉬 단계와 GCI(해석해로 검증한 관측 차수·외삽값), 값 커버리지 스팟 체크와 실행 우선순위, 4단(플랩 3개) 형상·메쉬, 수렴 상태 판정, 원형·분할·직사각형 자유류 영역 메쉬, 2단·3단 형상 배치 정확도(mm 단위 갭), Fluent 메쉬 면 방향 규칙, 패널법 이론값, 케이스 세트, 세트·속도별 스크리닝 선별과 실행 반영, 메쉬 생성부터 해석, cl/cd 변환, 순위, 그래프까지의 전체 흐름을 검증합니다.

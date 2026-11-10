@@ -5,14 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "aero-automation"
 version = "0.1.0"
-description = "2D 익형/플랩 형상 최적화용 ANSYS Fluent 배치 해석 자동화"
+description = "2D 다요소 날개(메인 + 플랩) 위치·형상 최적화용 ANSYS Fluent 배치 해석 자동화"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["numpy", "matplotlib", "gmsh>=4.11"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
-ml = ["lightgbm", "torch"]
 
 [project.scripts]
 aero-auto = "aero_automation.cli:main"

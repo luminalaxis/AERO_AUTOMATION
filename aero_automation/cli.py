@@ -9,12 +9,6 @@
     python -m aero_automation status   # 케이스별 진행 상태
     python -m aero_automation collect  # 결과 요약 CSV, 순위, 그래프 생성
     python -m aero_automation gci      # 메쉬 독립성 확인 (mesh_level 3단계 → Richardson 외삽, GCI)
-
-    python -m aero_automation fetch-airfoils  # UIUC 좌표 파일 내려받기
-    python -m aero_automation dataset         # CST 계수 + 형상 단위 분할 → runs/dataset/
-    python -m aero_automation train           # 기준 방법 / LightGBM / MLP 학습·조건별 평가 → runs/ml/
-    python -m aero_automation compare A B     # 학습 결과끼리 같은 케이스로 비교 (실험 1·2, 개선 실험)
-    python -m aero_automation edge-cases      # 경계 사례 10개 선정 + 사례별 그래프
 """
 
 from __future__ import annotations
@@ -323,154 +317,6 @@ def cmd_gci(args) -> int:
     return 0
 
 
-def cmd_fetch_airfoils(args) -> int:
-    from pathlib import Path
-
-    from .airfoil_db import UIUC_URL, UIUC_ZIP_URL, fetch_airfoils
-
-    cfg, cases = _load(args)
-    r = fetch_airfoils(cfg, cases, url=args.url or UIUC_URL,
-                       zip_path=Path(args.zip).resolve() if args.zip else None, force=args.force)
-    print(f"받음 {len(r['ok'])}개, 이미 있음 {len(r['skipped'])}개, 실패 {len(r['failed'])}개")
-    for spec, reason in r["failed"].items():
-        print(f"  [실패] {spec}: {reason}")
-    if r["failed"]:
-        print(f"사이트 접속이 안 되면 {UIUC_ZIP_URL} 을 받아 --zip 으로 지정하세요.")
-    return 1 if r["failed"] else 0
-
-
-def cmd_dataset(args) -> int:
-    from .dataset import build_dataset
-
-    cfg, cases = _load(args)
-    r = build_dataset(cfg, cases, resplit=args.resplit)
-    print(f"데이터셋: {r['dir']}  (dataset.csv, airfoils.csv, split.json, cst_fits.png)")
-    print("분할       형상   케이스")
-    for split, c in r["counts"].items():
-        print(f"  {split:<9} {c['shapes']:>4}  {c['cases']:>6}")
-    print("수렴 상태: " + ", ".join(f"{k} {v}" for k, v in sorted(r["states"].items()))
-          + "  (diverged는 학습·평가에서 빼고 건수만 보고)")
-    print(f"실속 부근(CL 최대 받음각 ± 창) 케이스: {r['near_stall']}")
-    if r["yplus"]:
-        y = r["yplus"]
-        print(f"y+ (yplus_max, 학습에 쓰는 케이스 {y['n']}개): 중앙값 {y['median']:.2f}, 최대 {y['max']:.2f}")
-    if r["tsst"] is not None:
-        t = r["tsst"]
-        print(f"SST vs Transition SST: 같은 케이스 {t['n']}개 비교 (차이 = T-SST − SST)")
-        for re, st in t["by_re"].items():
-            print(f"  Re {re:,.0f}: {st['n']}개, |ΔCL| 중앙값 {st['median_abs_d_cl']:.3f} · 최대 {st['max_abs_d_cl']:.3f}"
-                  f" ({st['max_d_cl_case']}), |Δlog10 CD| 중앙값 {st['median_abs_d_log10_cd']:.3f}"
-                  f" · 최대 {st['max_abs_d_log10_cd']:.3f} ({st['max_d_log10_cd_case']})")
-        if not t["n"]:
-            print("  [경고] 이름이 같은 케이스가 없습니다. Transition SST 프로젝트도 같은 케이스 이름 패턴을 쓰세요.")
-    for w in r["warnings"]:
-        print(f"[경고] {w}")
-    return 0
-
-
-def _ci(m: dict, key: str, fmt: str = ".4f") -> str:
-    """값 [95% 신뢰구간]."""
-    if m.get(key) is None:
-        return "-"
-    if m.get(f"{key}_lo95") is None:
-        return format(m[key], fmt)
-    return f"{m[key]:{fmt}} [{m[f'{key}_lo95']:{fmt}}, {m[f'{key}_hi95']:{fmt}}]"
-
-
-def cmd_train(args) -> int:
-    from .learn import PI_TAG, TrainOptions, train
-
-    cfg = load_config(args.config)
-    opts = TrainOptions(models=args.model, features=args.features,
-                        hidden=[int(h) for h in args.hidden.split(",") if h],
-                        n_seeds=args.seeds, epochs=args.epochs, stall_weight=args.stall_weight,
-                        ood_train_fraction=args.ood_train_fraction, name=args.name)
-    r = train(cfg, opts)
-    print(f"학습 케이스 {r['n_train']}개, 검증 {r['n_val']}개, 입력 {len(r['features'])}개 ({opts.features} + aoa + log10_re)")
-    if r["moved"]:
-        print(f"test_ood 형상 {len(r['moved'])}개를 학습에 추가: {', '.join(r['moved'])}")
-    print(f"[ ] = 형상 단위 부트스트랩 95% 신뢰구간, PI{PI_TAG} = {PI_TAG}% 예측 구간 (CL)")
-    print(f"\n{'model':<9}{'split':<10}{'condition':<12}{'n':>6}  {'MAE CL [95% CI]':<27}{'MAE log10CD [95% CI]':<27}"
-          f"{'PI' + PI_TAG + ' width':>11}  {'PI' + PI_TAG + ' cover [95% CI]':<20}")
-    for m in r["metrics"]:
-        if m["condition"].startswith("state="):
-            continue
-        width = f"{m[f'width{PI_TAG}_cl']:.3f}" if f"width{PI_TAG}_cl" in m else "-"
-        print(f"{m['model']:<9}{m['split']:<10}{m['condition']:<12}{m['n']:>6}  {_ci(m, 'mae_cl', '.3f'):<27}"
-              f"{_ci(m, 'mae_log10_cd', '.3f'):<27}{width:>11}  {_ci(m, f'cover{PI_TAG}_cl', '.2f'):<20}")
-    if any(r["diverged"].values()):
-        print("\n발산(diverged) 케이스는 학습·평가에서 빼고 건수만 보고: "
-              + ", ".join(f"{s} {n}" for s, n in r["diverged"].items()))
-    print(f"\n결과: {r['dir']}  (metrics.csv: 수렴 상태별 포함, predictions.csv, run.json)")
-    return 0
-
-
-def _delta(e: dict, key: str) -> str:
-    """기준 대비 차이 [95% 신뢰구간], 구간이 0을 포함하지 않으면 *."""
-    if e.get(key) is None:
-        return "(기준)"
-    lo, hi = e[f"{key}_lo95"], e[f"{key}_hi95"]
-    return f"{e[key]:+.4f} [{lo:+.4f}, {hi:+.4f}]" + ("*" if lo > 0 or hi < 0 else "")
-
-
-def cmd_compare(args) -> int:
-    from .analysis import compare
-    from .learn import PI_TAG
-
-    cfg = load_config(args.config)
-    r = compare(cfg, args.runs, args.model, args.name)
-    print(f"모든 실행에 공통인 평가 케이스 {r['n_cases']}개(test, test_ood)로 비교합니다.")
-    print("ΔMAE = MAE − 기준 MAE (음수 = 개선), [ ] = 짝지은 형상 단위 부트스트랩 95% 신뢰구간, "
-          "* = 구간이 0을 포함하지 않음")
-    for run, n in r["not_common"].items():
-        if n:
-            print(f"  {run}: 다른 실행에 없는 케이스 {n}개 제외 (학습에 넣은 처음 보는 형상 등)")
-    if r["mismatch"]:
-        print(f"[경고] 실행마다 정답·분할이 다른 케이스 {len(r['mismatch'])}개 제외 "
-              f"(사이에 dataset을 다시 만든 것 같습니다): {', '.join(r['mismatch'][:5])}")
-    print(f"\n{'split':<10}{'condition':<12}{'n':>6}  {'run/model':<26}{'MAE CL':>8}  {'ΔMAE CL [95% CI]':<30}"
-          f"{'MAE logCD':>10}  {'ΔMAE logCD [95% CI]':<30}{'PI' + PI_TAG + ' cover CL':>15}")
-    for e in r["rows"]:
-        cover = e.get(f"cover{PI_TAG}_cl")
-        print(f"{e['split']:<10}{e['condition']:<12}{e['n']:>6}  {e['run'] + '/' + e['model']:<26}"
-              f"{e['mae_cl']:>8.4f}  {_delta(e, 'd_mae_cl'):<30}{e['mae_log10_cd']:>10.4f}  "
-              f"{_delta(e, 'd_mae_log10_cd'):<30}{'-' if cover is None else f'{cover:.0%}':>15}")
-    print(f"\n결과: {r['path']}")
-    return 0
-
-
-def cmd_edge_cases(args) -> int:
-    from .analysis import edge_cases
-    from .learn import PI_TAG
-
-    cfg = load_config(args.config)
-    r = edge_cases(cfg, args.run, args.model, plots=not args.no_plots)
-    s = r["scale"]
-    print(f"경계 사례 {len(r['rows'])}개 ({args.run}, {args.model}). 오차 점수 = |CL 오차| / {s['cl']:.4f} "
-          f"+ |log10 CD 오차| / {s['log10_cd']:.4f}  (평가 세트 평균 오차의 몇 배인지, 1 = 평균)")
-    print(f"PI{PI_TAG}: CFD 정답이 {PI_TAG}% 예측 구간 안이면 O (CL/log10 CD)\n")
-    print(f"{'no':>3}  {'category':<14}{'pick':<13}{'case':<34}{'split':<10}{'CL err':>8}{'logCD err':>10}"
-          f"{'score':>7}{'PI' + PI_TAG:>7}")
-    for e in r["rows"]:
-        if f"in_pi{PI_TAG}_cl" in e:
-            pi = "/".join("O" if e.get(f"in_pi{PI_TAG}_{t}") else "X" for t in ("cl", "log10_cd"))
-        else:
-            pi = "-"
-        extra = ""
-        if e["category"] == "turbulence":
-            extra = f"   T-SST − SST: ΔCL {e['d_cl_tsst']:+.3f}, Δlog10 CD {e['d_log10_cd_tsst']:+.3f}"
-        print(f"{e['no']:>3}  {e['category']:<14}{e['pick']:<13}{e['case']:<34}{e['eval_split']:<10}"
-              f"{e['err_cl']:>+8.3f}{e['err_log10_cd']:>+10.3f}{e['error_score']:>7.1f}{pi:>7}{extra}")
-    if not r["has_tsst"]:
-        print("\n[참고] Transition SST 결과가 없어 난류 모델 민감 사례 2개는 고르지 못했습니다. "
-              "Transition SST로 일부 케이스를 다시 푼 뒤 [ml] tsst_summary를 지정하고 dataset → train → edge-cases 순서로 다시 실행하세요.")
-    other = [c for c in r["missing"] if c != "turbulence"]
-    if other:
-        print(f"[참고] 해당하는 평가 케이스가 없는 범주: {', '.join(other)}")
-    print(f"\n결과: {r['dir']}  (edge_cases.csv, 사례별 CL-α · log10 CD-α 그래프)")
-    return 0
-
-
 def _safe_console() -> None:
     """출력을 파일로 넘길 때(예: aero-auto run > log.txt) 한국어 Windows 기본 인코딩(cp949)에 없는
     문자(−, ≈ 등)가 나와도 멈추지 않도록, 표현할 수 없는 문자는 ?로 바꿔 쓴다."""
@@ -531,35 +377,6 @@ def main(argv=None) -> int:
     p = add("gci", cmd_gci, "메쉬 독립성 확인: mesh_level 3단계 결과로 Richardson 외삽·GCI 계산")
     p.add_argument("--quantity", nargs="+", metavar="Q", help="계산할 값 (기본: cl, cd와 요소별 cl-*, cd-*)")
     p.add_argument("--no-plots", action="store_true", help="그래프 없이 CSV만")
-    p = add("fetch-airfoils", cmd_fetch_airfoils, "UIUC 좌표 파일 내려받기 (없는 파일만)")
-    p.add_argument("--zip", help="UIUC coord_seligFmt.zip 경로 (사이트 대신 압축 파일에서 꺼냄)")
-    p.add_argument("--url", help="내려받을 주소 템플릿 (기본: UIUC, {name} = 파일 이름)")
-    p.add_argument("--force", action="store_true", help="이미 있는 파일도 다시 받기")
-    p = add("dataset", cmd_dataset, "학습용 데이터셋 (CST 계수, 수렴 상태, 형상 단위 분할)")
-    p.add_argument("--resplit", action="store_true", help="split.json을 무시하고 형상 분할을 새로 함")
-    p = sub.add_parser("train", help="회귀 모델 학습·평가 (dataset 결과 사용)")
-    p.add_argument("--model", nargs="+", default=["baseline", "lgbm", "mlp"],
-                   choices=["baseline", "lgbm", "mlp"], help="학습할 모델 (기본: 셋 다)")
-    p.add_argument("--features", default="cst16", help="형상 특성: cst16(면당 8개) 또는 cst8(면당 4개)")
-    p.add_argument("--hidden", default="64,64", help="MLP 은닉층 크기 (예: 32,32 / 128,128,128)")
-    p.add_argument("--seeds", type=int, default=5, help="MLP 앙상블 시드 수")
-    p.add_argument("--epochs", type=int, default=2000, help="MLP 최대 에폭 (검증 손실로 조기 종료)")
-    p.add_argument("--stall-weight", type=float, default=1.0, help="실속 부근 학습 케이스 가중치 (개선 실험)")
-    p.add_argument("--ood-train-fraction", type=float, default=0.0,
-                   help="처음 보는 형상(test_ood) 중 학습에 추가할 비율 (개선 실험)")
-    p.add_argument("--name", help="결과 폴더 이름 (기본: 특성_은닉층)")
-    p.set_defaults(func=cmd_train)
-    p = sub.add_parser("compare", help="학습 결과끼리 같은 케이스·같은 지표로 비교 (실험 1·2, 개선 실험)")
-    p.add_argument("runs", nargs="+", metavar="RUN", help="runs/ml/ 아래 결과 폴더 이름. 첫 번째가 기준")
-    p.add_argument("--model", nargs="+", choices=["baseline", "lgbm", "mlp"],
-                   help="비교할 모델 (기본: 결과에 있는 모델 전부)")
-    p.add_argument("--name", help="결과 파일 이름 (기본: 실행 이름을 _vs_로 이음)")
-    p.set_defaults(func=cmd_compare)
-    p = sub.add_parser("edge-cases", help="경계 사례 10개 선정 + 사례별 그래프 (train 결과 사용)")
-    p.add_argument("--run", default="cst16_h64x64", help="runs/ml/ 아래 결과 폴더 이름 (기본: cst16_h64x64)")
-    p.add_argument("--model", default="mlp", choices=["baseline", "lgbm", "mlp"], help="분석할 모델 (기본: mlp)")
-    p.add_argument("--no-plots", action="store_true", help="그래프 없이 CSV만")
-    p.set_defaults(func=cmd_edge_cases)
 
     _safe_console()
     # 도움말(-h)도 지운 화면에 나오도록 인자 해석 전에 지운다 (터미널일 때만)
