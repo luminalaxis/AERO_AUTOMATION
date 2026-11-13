@@ -265,10 +265,19 @@ class RunResult:
     elapsed: float = 0.0
 
 
+POLL_SECONDS = 0.5  # 솔버가 끝났는지, 중단 요청(stop)이 왔는지 확인하는 간격
+
+
 def run_case(cfg: ProjectConfig, case: Case, template_text: str | None = None,
-             force: bool = False) -> RunResult:
+             force: bool = False, stop: threading.Event | None = None) -> RunResult:
+    """케이스 하나 실행. stop이 켜지면(동시 실행 중 Ctrl+C) 솔버를 끝내고 interrupted로 표시한다.
+
+    Ctrl+C(KeyboardInterrupt)는 주 스레드에만 오므로, 작업 스레드에서 도는 케이스는 stop으로 알린다.
+    """
     if not force and read_status(case).get("state") == "done":
         return RunResult(case, "skipped", "이미 완료됨")
+    if stop is not None and stop.is_set():
+        return RunResult(case, "interrupted", "시작 전 중단")
 
     if case.mesh is not None and not case.mesh.mesh_file.is_file():
         from .meshing import ERROR_FILE
@@ -302,20 +311,34 @@ def run_case(cfg: ProjectConfig, case: Case, template_text: str | None = None,
             _write_status(case, state="failed", command=cmd, message=f"실행 실패: {exc}")
             return RunResult(case, "failed", f"실행 실패: {exc}")
         try:
-            returncode = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            _kill_tree(proc)
-            proc.wait()
-            elapsed = time.monotonic() - start
-            msg = f"시간 초과 ({cfg.solver.timeout_minutes}분)"
-            _write_status(case, state="failed", command=cmd, message=msg, elapsed_sec=round(elapsed, 1))
-            return RunResult(case, "failed", msg, elapsed)
+            returncode = None
+            while returncode is None:
+                if stop is not None and stop.is_set():
+                    _kill_tree(proc)
+                    proc.wait()
+                    _write_status(case, state="interrupted", command=cmd)
+                    return RunResult(case, "interrupted", "", time.monotonic() - start)
+                if timeout is not None and time.monotonic() - start >= timeout:
+                    _kill_tree(proc)
+                    proc.wait()
+                    elapsed = time.monotonic() - start
+                    msg = f"시간 초과 ({cfg.solver.timeout_minutes}분)"
+                    _write_status(case, state="failed", command=cmd, message=msg, elapsed_sec=round(elapsed, 1))
+                    return RunResult(case, "failed", msg, elapsed)
+                try:
+                    returncode = proc.wait(timeout=POLL_SECONDS)
+                except subprocess.TimeoutExpired:
+                    pass
         except KeyboardInterrupt:
             _kill_tree(proc)
             _write_status(case, state="interrupted", command=cmd)
             raise
 
     elapsed = time.monotonic() - start
+    if stop is not None and stop.is_set():
+        # Windows에서는 Ctrl+C가 같은 콘솔의 솔버에도 전달돼 솔버가 먼저 끝날 수 있다: 실패가 아니라 중단
+        _write_status(case, state="interrupted", command=cmd)
+        return RunResult(case, "interrupted", "", elapsed)
     if returncode != 0:
         state, msg = "failed", f"종료 코드 {returncode}"
     elif err := _scan_errors([log_path, case.dir / TRANSCRIPT_NAME], cfg.results.error_patterns):
@@ -347,10 +370,19 @@ def run_all(cfg: ProjectConfig, cases: list[Case], force: bool = False,
             results.append(r)
         return results
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(run_case, cfg, c, template_text, force): c for c in cases}
+    stop = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = {pool.submit(run_case, cfg, c, template_text, force, stop): c for c in cases}
         for i, fut in enumerate(as_completed(futures), start=1):
             r = fut.result()
             report(i, r)
             results.append(r)
+    except BaseException:
+        # Ctrl+C 등: 대기 중인 케이스는 취소하고, 실행 중인 솔버는 각 작업 스레드가 stop을 보고 끝낸다.
+        # (그냥 두면 풀이 남은 케이스를 끝까지 다 돌린 뒤에야 멈춘다)
+        stop.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
     return results

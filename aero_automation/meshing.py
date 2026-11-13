@@ -397,16 +397,38 @@ def _extract(walls: dict, outer: dict) -> tuple[np.ndarray, list, list[Boundary]
     return nodes_xy, cells, boundaries, q_min
 
 
+def _worker_main(conn, func, args) -> None:
+    """작업 프로세스 본체: func(*args) 결과나 오류를 파이프로 돌려준다."""
+    try:
+        try:
+            msg = ("ok", func(*args))
+        except ConfigError as exc:
+            msg = ("config_error", str(exc))
+        except Exception as exc:  # 예외 객체는 피클이 안 될 수 있어 글자로 보낸다
+            msg = ("error", f"{type(exc).__name__}: {exc}")
+        conn.send(msg)
+    finally:
+        conn.close()
+
+
+class MeshWorkerError(RuntimeError):
+    """작업 프로세스 안에서 난 예상 못 한 오류 (메시지 = "오류 종류: 내용")."""
+
+
 class MeshWorker:
-    """메쉬 생성을 별도 프로세스에서 실행한다 (gmsh가 멈추는 형상이 있어도 시간 제한 후 그 형상만 실패).
+    """메쉬 생성을 별도 프로세스에서 실행한다 (gmsh가 멈추거나 죽는 형상이 있어도 그 형상만 실패).
 
     형상마다 새 프로세스에서 만든다: gmsh는 한 프로세스 안에서 앞서 만든 메쉬에 따라(메모리 배치 등)
     같은 설정이어도 셀이 조금씩 달라지는데, 새 프로세스의 첫 메쉬는 항상 같다. 그래서 만드는 순서·동시 개수·
-    팀원 분담(--part)과 관계없이 같은 메쉬가 나온다. 시간 초과가 나면 그 프로세스를 끝내고 새로 띄운다.
+    팀원 분담(--part)과 관계없이 같은 메쉬가 나온다.
+
+    프로세스를 직접 띄우고 파이프로 결과를 받는다. multiprocessing.Pool은 작업 프로세스가 죽어도(gmsh
+    세그폴트 등) 알려 주지 않아서 결과를 끝없이 기다리게 된다. 파이프는 상대가 죽으면 바로 닫히므로
+    시간 제한을 기다리지 않고 그 형상만 실패 처리할 수 있다.
     """
 
     def __init__(self):
-        self._pool = None
+        self._proc = None
 
     def __enter__(self) -> "MeshWorker":
         return self
@@ -414,36 +436,55 @@ class MeshWorker:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    def _get_pool(self):
-        if self._pool is None:
-            import multiprocessing as mp
-            self._pool = mp.get_context("spawn").Pool(1, maxtasksperchild=1)
-        return self._pool
-
     def close(self, kill: bool = False) -> None:
-        if self._pool is not None:
-            if kill:
-                self._pool.terminate()
-            else:
-                self._pool.close()
-            self._pool.join()
-            self._pool = None
+        """실행 중인 작업 프로세스를 정리한다. kill=True면 기다리지 않고 바로 끝낸다 (다른 스레드에서 불러도 됨)."""
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        if kill and proc.is_alive():
+            proc.kill()
+        proc.join()
 
     def run(self, job: MeshJob, root: Path, plots: bool, stop=None) -> dict:
         """작업 프로세스에서 메쉬 생성. stop(threading.Event)이 켜지면 바로 프로세스를 끝내고 중단한다."""
-        timeout = job.settings.timeout if job.settings.timeout and job.settings.timeout > 0 else None
-        deadline = None if timeout is None else time.monotonic() + timeout
-        result = self._get_pool().apply_async(_generate, (job, root, plots))
-        while not result.ready():
-            if stop is not None and stop.is_set():
-                self.close(kill=True)
-                raise ConfigError(f"중단됨 ({job.name})")
-            if deadline is not None and time.monotonic() >= deadline:
-                self.close(kill=True)
-                raise ConfigError(f"메쉬 생성 시간 초과 ({job.settings.timeout:g}초, {job.name}). "
-                                  "형상 좌표(뒷전이 겹치거나 꼬인 곳)를 확인하세요.")
-            result.wait(0.5)
-        return result.get()
+        return self._call(_generate, (job, root, plots), job.name, job.settings.timeout, stop)
+
+    def _call(self, func, args: tuple, name: str, timeout: float | None, stop=None):
+        """새 프로세스에서 func(*args)를 실행하고 결과를 돌려준다. 시간 초과·중단·비정상 종료는 ConfigError."""
+        import multiprocessing as mp
+
+        ctx = mp.get_context("spawn")
+        deadline = time.monotonic() + timeout if timeout and timeout > 0 else None
+        recv, send = ctx.Pipe(duplex=False)
+        proc = ctx.Process(target=_worker_main, args=(send, func, args), daemon=True)
+        proc.start()
+        send.close()  # 이쪽 복사본을 닫아야 작업 프로세스가 죽었을 때 recv가 EOF를 본다
+        self._proc = proc
+        try:
+            while not recv.poll(0.5):
+                if stop is not None and stop.is_set():
+                    self.close(kill=True)
+                    raise ConfigError(f"중단됨 ({name})")
+                if deadline is not None and time.monotonic() >= deadline:
+                    self.close(kill=True)
+                    raise ConfigError(f"메쉬 생성 시간 초과 ({timeout:g}초, {name}). "
+                                      "형상 좌표(뒷전이 겹치거나 꼬인 곳)를 확인하세요.")
+            try:
+                kind, payload = recv.recv()
+            except (EOFError, OSError):
+                # 결과를 보내기 전에 프로세스가 사라짐: gmsh 내부 충돌(세그폴트), 메모리 부족으로 강제 종료 등
+                proc.join(5)
+                raise ConfigError(f"메쉬 작업 프로세스가 비정상 종료했습니다 (종료 코드 {proc.exitcode}, {name}). "
+                                  "gmsh 내부 충돌이나 메모리 부족일 수 있습니다. 형상 좌표를 확인하고, "
+                                  "메모리가 부족하면 mesh -j 를 줄이세요.") from None
+        finally:
+            recv.close()
+            self.close(kill=True)
+        if kind == "ok":
+            return payload
+        if kind == "config_error":
+            raise ConfigError(payload)
+        raise MeshWorkerError(payload)
 
 
 _BLAS_THREAD_VARS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
@@ -488,11 +529,14 @@ def generate_mesh(job: MeshJob, root: Path, plots: bool = True, worker: MeshWork
             with MeshWorker() as w:
                 info = w.run(job, root, plots)
     except ConfigError as exc:
+        # 검증에 실패한 메쉬 파일이 남으면 run 이 그 메쉬로 계산하므로 지운다
+        (job.dir / MESH_FILE).unlink(missing_ok=True)
         (job.dir / ERROR_FILE).write_text(str(exc), encoding="utf-8")
         raise
     except Exception as exc:  # gmsh 밖(메쉬 파일 쓰기·검증 등)에서 난 오류도 그 형상만 실패
         (job.dir / MESH_FILE).unlink(missing_ok=True)
-        msg = f"메쉬 생성 오류 ({job.name}): {type(exc).__name__}: {exc}"
+        detail = str(exc) if isinstance(exc, MeshWorkerError) else f"{type(exc).__name__}: {exc}"
+        msg = f"메쉬 생성 오류 ({job.name}): {detail}"
         (job.dir / ERROR_FILE).write_text(msg, encoding="utf-8")
         raise ConfigError(msg) from exc
     return info

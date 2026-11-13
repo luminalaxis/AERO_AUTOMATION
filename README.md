@@ -87,6 +87,7 @@ aero-auto collect          # 결과 다시 정리 (summary, ranking, 그래프)
 - `--only "2el_4412c375*"`: 일부 케이스만 실행 (와일드카드, 그룹 이름도 가능)
 - `-j 2`: 동시 실행 수 (라이선스와 코어 수 고려). `mesh -j 4`는 동시에 만들 메쉬 수(기본: CPU 코어 수, 최대 8. 메쉬당 메모리 약 300 MB)
 - `--limit 100`: 남은 케이스 중 앞의 100개만 실행 (나눠서 돌릴 때, `--priority`와 함께)
+- Ctrl+C로 중단하면 실행 중인 솔버를 끝내고 남은 케이스는 시작하지 않습니다(`-j` 동시 실행 포함, 상태 `interrupted`).
 - 중단돼도 다시 `run` 하면 완료된 케이스와 이미 만든 메쉬는 건너뜁니다. 전부 다시 하려면 `run --force`, `mesh --force`.
 - `screen`을 한 번 돌리면 이후 `mesh`, `run`은 제외된 케이스를 자동으로 건너뜁니다(상태 `screened`). 스크리닝을 무시하려면 `--all`.
 - 실패 판정: 종료 코드, 로그의 `Error:` / `Divergence detected`, 시간 초과(`timeout_minutes`), 메쉬 생성 실패.
@@ -241,6 +242,7 @@ aero-auto edge-cases          # 경계 사례 10개 + 사례별 그래프 → ru
 - **결과값(정답)**: 마지막 `[results] average_last`(예제: 200)개 반복의 평균입니다. 진동 케이스는 `average_last_oscillating`(예제: 500)개로 더 길게 평균합니다(기획서 라벨 규칙). 실제로 평균에 쓴 반복 수는 `avg_iters` 열에 남습니다.
 - **y+**: 베이스 케이스의 리포트 `yplus-max`(벽면 y+ 최대), `yplus-avg`(면적 가중 평균)를 같은 리포트 파일에 넣으면 `summary.csv`의 `yplus-max`, `yplus-avg`와 `dataset.csv`의 `yplus_max`, `yplus_avg`로 기록됩니다([docs/FLUENT_BASE_CASE_AIRFOIL.md](docs/FLUENT_BASE_CASE_AIRFOIL.md) 9단계). `dataset`이 중앙값과 최대를 출력하고, 리포트가 없으면 경고합니다.
 - **발산**: `dataset`이 상태별 건수를 출력하고, `train`은 발산 케이스를 학습·평가에서 빼고 분할별 건수만 `metrics.csv`(`state=diverged`)에 남깁니다.
+  `collect`도 발산 케이스를 `ranking.csv`와 요약 그래프에서 빼고 건수를 경고로 알립니다(`summary.csv`에는 그대로 남음).
 
 ### 데이터셋 (`aero-auto dataset` → `runs/dataset/`)
 
