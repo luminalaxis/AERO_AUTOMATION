@@ -173,7 +173,7 @@ aero-auto run --priority
 | 형상 | NACA 4자리 60개(공식 생성) + UIUC 60개(`airfoils.csv`). UIUC 중 **캠버 6.5% 이상 10개**(`family = high_camber`: s1223, s1210, e423, ch10sm, fx74cl5140, mh114, dae11, dae21, goe226, e591)는 학습에서 빼고 "처음 보는 형상" 평가에만 씀 |
 | 받음각 | −4, −2, 0, 2, 4, 6, 8, 10, 11~16° (14개, 실속 부근 1° 간격) |
 | Re | 2×10⁵, 5×10⁵ (코드 0.3 m 기준 유속 9.7, 24.3 m/s) |
-| 해석 | Fluent 2D 정상 상태 k-ω SST, 직사각형 영역(앞전 기준 앞 20c, 뒤 40c, 위·아래 20c, 앞 = inlet, 위·아래 = 미끄럼 벽(wall, Specified Shear 0), 뒤 = outlet), 형상당 메쉬 1개(약 5.2만 셀) |
+| 해석 | Fluent 2D 정상 상태 k-ω SST, 직사각형 영역(앞전 기준 앞 20c, 뒤 40c, 위·아래 20c, 앞 = inlet, 위·아래 = 미끄럼 벽(wall, Specified Shear 0), 뒤 = outlet). 받음각은 **익형을 앞전 기준으로 회전**해 넣고 유동은 수평, 받음각마다 메쉬 1개(약 4.5만 셀) |
 | 입력 → 목표 | CST 계수 16개(면당 8개) + 받음각 + log10(Re) → CL, log10(CD) |
 | 라벨 규칙 | 케이스마다 수렴 상태(`conv_state`)와 y+(`yplus_max`, `yplus_avg`) 기록. 수렴 케이스는 마지막 200회, 진동 케이스는 마지막 500회 반복 평균. 발산 케이스는 학습·평가에서 빼고 건수만 보고 |
 | 평가 | 조건별 MAE와 표본 수, 형상 단위 부트스트랩 95% 신뢰구간, 90% 예측 구간의 실제 포함률. 실행 간 비교는 공통 케이스만으로(`compare`), 경계 사례 10개(`edge-cases`) |
@@ -189,11 +189,11 @@ aero-auto fetch-airfoils      # UIUC 좌표 60개를 airfoils/ 에 내려받음 
 ```
 
 ```bash
-aero-auto plan --dry-run      # 3,360 케이스, 형상(메쉬) 120개
+aero-auto plan --dry-run      # 3,360 케이스, 메쉬 1,680개 (형상 120 × 받음각 14)
 ```
 
 ```bash
-aero-auto mesh                # 형상별 메쉬 (각 5~8초)
+aero-auto mesh                # 형상·받음각별 메쉬 1,680개 (각 5~8초, CPU 코어 수만큼 동시에)
 ```
 
 Fluent 베이스 케이스 `base_airfoil.cas.h5`를 만든 뒤([docs/FLUENT_BASE_CASE_AIRFOIL.md](docs/FLUENT_BASE_CASE_AIRFOIL.md)) 팀원 4명이 나눠 실행합니다.
@@ -488,6 +488,7 @@ CFD가 끝난 뒤 `collect`는 `plots/screening_vs_cfd_cl.png`, `screening_vs_cf
 | `farfield_shape` | `"circle"` | (지면 없을 때) 영역 모양. `"circle"` = 원형 원거리 경계, `"box"` = 직사각형 인클로저 |
 | `farfield_radius`, `farfield_size` | 50, 5.0 | (circle) 원거리 경계 반지름과 셀 크기 [메인 코드] |
 | `farfield_split` | false | (circle) true면 원거리 경계를 앞 반원 `inlet`(velocity-inlet) + 뒤 반원 `outlet`(pressure-outlet)으로 나눔. 밀도 일정(비압축) 해석용 |
+| `rotate_aoa` | box면 true | 위·아래가 벽이라 유입을 기울이면 날개에 닿기 전에 수평으로 펴집니다(±20c 높이, 앞 20c에서 지정 각도의 약 1/4). 그래서 box는 자동으로 `rotate_aoa = true`: 받음각만큼 날개를 메인 앞전 기준으로 회전한 메쉬를 받음각마다 만들고 `flow_angle = 0`. 메쉬 이름 끝에 `_a<받음각>`. 원형 영역에서도 `[constants] rotate_aoa = true`로 켤 수 있습니다 |
 | `box_upstream`, `box_downstream`, `box_height` | 20, 40, 20 | (box) 메인 앞전 ~ 앞 경계, 메인 앞전 ~ 뒤 경계, 시위선 ~ 위·아래 경계 거리 [메인 코드]. 앞 = `inlet`(velocity-inlet), 위·아래 = `top`·`bottom`(wall, Fluent에서 미끄럼 벽 = Specified Shear 0), 뒤 = `outlet`(pressure-outlet) |
 | `box_far_size` | 2.0 | (box) 바깥 경계 셀 크기 [메인 코드] |
 | `ground_upstream`, `ground_downstream`, `ground_height` | 5, 12, 6 | (지면 있을 때) 메인 앞전~inlet, 메인 앞전~outlet, 지면~위쪽 경계 [메인 코드] |

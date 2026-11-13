@@ -20,6 +20,7 @@ from .config import ConfigError, safe_name
 from .fluent_msh import Boundary, check_msh, write_msh
 from .geometry import Geometry, build_geometry, geometry_params, n_flaps
 
+ROTATED_WAKE_ANGLES = (-5.0, 0.0, 5.0)  # 날개를 회전하는 방식(rotate_aoa)의 기본 후류 세분화 방향 [deg]
 MESH_FILE = "mesh.msh"
 INFO_FILE = "mesh_info.json"
 ERROR_FILE = "mesh_error.txt"
@@ -156,6 +157,8 @@ def mesh_name(params: dict) -> str:
     if "ground_clearance" in p:
         name += (f"_h{_fmt(p['ground_clearance'])}" + ("le" if p.get("ground_ref") == "main_le" else "")
                  + (f"_a{_fmt(p['aoa'])}" if "aoa" in p else ""))
+    elif p.get("rotate_aoa") and "aoa" in p:
+        name += f"_a{_fmt(p['aoa'])}"  # 날개를 회전하는 방식: 받음각마다 메쉬
     if params.get("mesh_level") not in (None, ""):
         name += f"_m{_fmt(params['mesh_level'])}"
     return name
@@ -167,6 +170,9 @@ def make_job(params: dict, mesh_cfg: dict, meshes_dir: Path) -> MeshJob:
     geo = geometry_params(params)
     # [mesh] 항목과 같은 이름의 케이스 변수가 있으면 케이스 값 사용 (예: reynolds)
     merged = {**mesh_cfg, **{k: params[k] for k in mesh_cfg.keys() | {f.name for f in fields(MeshSettings)} if k in params}}
+    if geo.get("rotate_aoa") and "ground_clearance" not in geo and merged.get("wake_angles") is None:
+        # 날개를 회전하는 방식은 유동이 항상 수평이라 후류도 수평 근처로만 세분화한다
+        merged["wake_angles"] = list(ROTATED_WAKE_ANGLES)
     settings = MeshSettings.from_dict(merged)
     name = safe_name(mesh_name(params))
     return MeshJob(name, meshes_dir / name, geo, settings)
