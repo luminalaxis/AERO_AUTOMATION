@@ -121,11 +121,14 @@ def test_airfoil_dataset_example_config():
     cfg = load_config(EXAMPLE)
     cases = build_cases(cfg)
     assert len(cases) == 120 * 14 * 2
-    assert len({c.mesh.name for c in cases}) == 120          # 형상당 메쉬 1개 (받음각·Re 공유)
+    # box 영역은 위·아래가 벽이라 받음각을 익형 회전으로 넣는다: 받음각마다 메쉬 (Re는 공유), 유동은 수평
+    assert len({c.mesh.name for c in cases}) == 120 * 14
+    assert all(c.params["rotate_aoa"] is True and c.params["flow_angle"] == 0.0 for c in cases)
     assert all(c.mesh.settings.reynolds == 500000 for c in cases)  # 첫 셀 높이는 큰 Re 기준
     assert all(c.mesh.settings.farfield_shape == "box" for c in cases)
     c = next(c for c in cases if c.name == "naca2412_Re200000_a4")
-    assert str(c.params["main_airfoil"]) == "2412" and c.params["flow_angle"] == 4
+    assert str(c.params["main_airfoil"]) == "2412" and c.mesh.name == "2412_c0.3_a4"
+    assert c.mesh.settings.wake_angles == [-5, 0, 5]
     assert c.params["velocity"] == pytest.approx(200000 * 1.7894e-5 / (1.225 * 0.3))
     ml = MLConfig.from_dict(cfg.ml)
     fams = {c.params["airfoil"]: c.params["family"] for c in cases}
@@ -138,6 +141,83 @@ def test_airfoil_dataset_example_config():
     assert [len(p) for p in parts] == [840] * 4
     meshes = [{c.mesh.name for c in p} for p in parts]
     assert all(not (meshes[i] & meshes[j]) for i in range(4) for j in range(i + 1, 4))
+    # 받음각마다 메쉬가 따로여도 같은 형상의 받음각 스윕은 한 사람에게
+    shapes = [{c.params["airfoil"] for c in p} for p in parts]
+    assert [len(s) for s in shapes] == [30] * 4
+    assert all(not (shapes[i] & shapes[j]) for i in range(4) for j in range(i + 1, 4))
+
+
+def test_box_enclosure_rotates_airfoil_instead_of_inflow(tmp_path):
+    """box 영역: 받음각 = 익형 회전(앞전 기준, 앞전이 올라가는 방향 +), 유입은 수평, 결과는 cl = cy, cd = cx."""
+    from aero_automation.geometry import build_geometry
+    from aero_automation.meshing import ROTATED_WAKE_ANGLES, generate_mesh, make_job, mesh_name
+    from aero_automation.results import summarize_case
+
+    base = {"main_airfoil": "0012", "chord": 0.3, "reynolds": 5e5}
+    flat = build_geometry({**base, "rotate_aoa": True, "aoa": 0}, tmp_path).elements[0]
+    up = build_geometry({**base, "rotate_aoa": True, "aoa": 10}, tmp_path)
+    el = up.elements[0]
+    assert up.info["aoa"] == 10 and "ground_y" not in up.info
+    assert el.xy[el.le_index] == pytest.approx([0, 0], abs=1e-12)          # 앞전은 그대로
+    te = 0.5 * (el.te_upper + el.te_lower)
+    assert te == pytest.approx([np.cos(np.radians(10)), -np.sin(np.radians(10))], abs=1e-3)  # 뒷전이 내려감
+    assert flat.xy[flat.le_index] == pytest.approx([0, 0], abs=1e-12) and abs(flat.te_upper[1]) < 0.01
+    # 뒤집힌(다운포스) 날개는 반대 방향: 양의 받음각 = 뒷전이 올라감
+    inv = build_geometry({**base, "downforce": True, "rotate_aoa": True, "aoa": 10}, tmp_path).elements[0]
+    assert 0.5 * (inv.te_upper + inv.te_lower)[1] == pytest.approx(np.sin(np.radians(10)), abs=1e-3)
+    # rotate_aoa가 없으면 예전과 같다 (받음각은 유입 방향, 메쉬 공유)
+    assert mesh_name({**base, "aoa": 10}) == "0012_c0.3"
+    assert mesh_name({**base, "rotate_aoa": True, "aoa": 10}) == "0012_c0.3_a10"
+
+    settings = {"farfield_shape": "box", "box_upstream": 10, "box_downstream": 20, "box_height": 8,
+                "box_far_size": 1.0, "surface_cells": 80, "near_size": 0.03, "wake_size": 0.03}
+    job = make_job({**base, "rotate_aoa": True, "aoa": 10}, settings, tmp_path)
+    assert job.settings.wake_angles == list(ROTATED_WAKE_ANGLES)
+    info = generate_mesh(job, tmp_path, plots=False)
+    assert set(info["zones"]) == {"interior-fluid", "main", "inlet", "top", "bottom", "outlet"}
+    assert info["geometry_info"]["aoa"] == 10
+
+    # 프로젝트 단위: box면 자동으로 켜지고, 직접 끄거나(원형에서) 켤 수 있다
+    (tmp_path / "j.jou").write_text("V=${flow_angle}\n", encoding="utf-8")
+
+    def cases_for(mesh: str, constants: str = ""):
+        (tmp_path / "p.toml").write_text(textwrap.dedent(f"""
+            [project]
+            template = "j.jou"
+            [solver]
+            kind = "custom"
+            command = ["unused"]
+            [constants]
+            main_airfoil = "2412"
+            {constants}
+            [cases]
+            name = "a{{aoa}}"
+            [cases.sweep]
+            aoa = [0, 8]
+            [mesh]
+            {mesh}
+        """), encoding="utf-8")
+        cfg = load_config(tmp_path / "p.toml")
+        return cfg, build_cases(cfg)
+
+    cfg, cases = cases_for('farfield_shape = "box"')
+    assert [c.mesh.name for c in cases] == ["2412_a0", "2412_a8"]
+    assert [c.params["flow_angle"] for c in cases] == [0.0, 0.0]
+    # 리포트의 cx, cy가 그대로 cd, cl (유동이 수평)
+    c8 = cases[1]
+    c8.dir.mkdir(parents=True)
+    (c8.dir / "coef-rfile.out").write_text('"r"\n("Iteration" "cx" "cy")\n1 0.02 0.9\n2 0.02 0.9\n', encoding="utf-8")
+    (c8.dir / "status.json").write_text(json.dumps({"state": "done"}), encoding="utf-8")
+    row = summarize_case(cfg, c8)
+    assert row["cl"] == pytest.approx(0.9) and row["cd"] == pytest.approx(0.02)
+    assert row["geometry"] == "2412"  # 순위·그래프의 형상 이름에는 받음각이 없음
+
+    _, cases = cases_for('farfield_shape = "circle"')
+    assert [c.mesh.name for c in cases] == ["2412", "2412"] and [c.params["flow_angle"] for c in cases] == [0, 8]
+    _, cases = cases_for('farfield_shape = "circle"', "rotate_aoa = true")
+    assert [c.mesh.name for c in cases] == ["2412_a0", "2412_a8"]
+    _, cases = cases_for('farfield_shape = "box"', "rotate_aoa = false")
+    assert [c.mesh.name for c in cases] == ["2412", "2412"] and [c.params["flow_angle"] for c in cases] == [0, 8]
 
 
 def test_split_farfield_mesh(tmp_path):

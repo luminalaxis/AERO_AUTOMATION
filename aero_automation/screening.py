@@ -374,11 +374,17 @@ def _flap_separation_warnings(geoms: list[dict], conditions: list, sc: Screening
 def check_spot(selection: dict, ranking: list[dict]) -> list[str]:
     """스팟 체크 형상의 CFD 결과가 같은 조건에서 유지된 형상보다 좋으면 경고 메시지를 만든다."""
     key = "ld_max" if selection.get("metric") == "ld_max_est" else "cl_max"
+
+    def in_condition(r: dict, cond: dict) -> bool:
+        # 값이 하나뿐인 조건 변수(예: 속도 하나, 세트 하나)는 형상 구분 변수가 아니라서 순위 행에 열이 없다.
+        # 그런 변수는 모든 행이 같은 값이므로 맞는 것으로 본다 (없는 열을 다르다고 보면 경고가 아예 안 나온다)
+        return all(k not in r or r[k] == v for k, v in cond.items())
+
     spot_geoms = {(s["geometry"], tuple(sorted(s["condition"].items()))) for s in selection.get("spot_check") or []}
     warnings = []
     for s in selection.get("spot_check") or []:
         same = [r for r in ranking if r.get("geometry") and r.get(key) is not None
-                and all(r.get(k) == v for k, v in s["condition"].items())]
+                and in_condition(r, s["condition"])]
         mine = [r for r in same if r["geometry"] == s["geometry"]]
         others = [r[key] for r in same
                   if (r["geometry"], tuple(sorted(s["condition"].items()))) not in spot_geoms]

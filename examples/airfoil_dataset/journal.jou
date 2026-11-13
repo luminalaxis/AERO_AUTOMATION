@@ -1,8 +1,9 @@
 ; ============================================================
 ; AERO_AUTOMATION 저널 템플릿 (단일 익형, 자유류, 데이터셋 생성용)
-;  - 달러+중괄호 표기는 케이스마다 자동 치환됩니다 (예: 받음각 flow_angle, 유속 velocity)
+;  - 달러+중괄호 표기는 케이스마다 자동 치환됩니다 (예: 유속 velocity, 메쉬 경로 mesh_file)
 ;  - 기본 제공 변수: case_name, group, case_dir, project_dir, nprocs, mesh_file, mesh_name
-;  - 메쉬는 형상마다 하나이고 받음각은 유입 방향으로 넣습니다 (inlet 속도 성분이 Named Expression 참조).
+;  - 받음각은 메쉬에 들어 있습니다 (익형을 앞전 기준으로 회전, 받음각마다 메쉬). 유동은 항상 수평(+x)입니다.
+;    위·아래 경계가 벽이라 유입을 기울이면 익형에 닿기 전에 수평으로 펴져 실제 받음각이 작아지기 때문입니다.
 ;
 ;  준비물: base_airfoil.cas.h5 (docs/FLUENT_BASE_CASE_AIRFOIL.md)
 ;  TUI 프롬프트는 Fluent 버전마다 다를 수 있으니, 처음 한 번은
@@ -17,14 +18,13 @@
 
 /file/read-case "${project_dir}/${base_case}"
 
-; 형상별 메쉬로 교체 (경계 이름 main / inlet / top / bottom / outlet 이 같아서 설정이 유지됨)
+; 형상·받음각별 메쉬로 교체 (경계 이름 main / inlet / top / bottom / outlet 이 같아서 설정이 유지됨)
 ; top / bottom 의 미끄럼 벽(Specified Shear 0) 설정도 베이스 케이스에서 그대로 유지됨
 /file/replace-mesh "${mesh_file}"
 /mesh/check
 
-; 유입 조건: inlet 속도 성분 = (speed·cos(alpha), speed·sin(alpha))
+; 유입 조건: inlet 속도 = (speed, 0)
 /define/named-expressions/edit "speed" definition "${velocity:.6f} [m/s]" q
-/define/named-expressions/edit "alpha" definition "${flow_angle} [deg]" q
 
 ; 기준값: Re마다 유속이 바뀌므로 매 케이스 갱신 (안 하면 cx, cy가 베이스 케이스 속도로 무차원화됨)
 /report/reference-values/velocity ${velocity:.6f}
@@ -32,7 +32,7 @@
 /report/reference-values/length ${chord}
 /report/reference-values/area ${chord}
 
-; 리포트 파일(cx, cy)을 케이스 폴더에 저장 → 도구가 받음각으로 회전해 cl, cd 계산
+; 리포트 파일(cx, cy)을 케이스 폴더에 저장 (유동이 수평이라 cx = cd, cy = cl)
 /solve/report-files/edit "coef-rfile" file-name "coef-rfile.out" q
 
 /solve/initialize/hyb-initialization

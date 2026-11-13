@@ -120,9 +120,11 @@ def plot_convergence(report_files: list[Path], path: Path, title: str = "") -> P
 def plot_summary(rows: list[dict], out_dir: Path, x_param: str, group_keys: list[str],
                  cl_label: str = "Cl") -> list[Path]:
     """형상별 Cl-α, Cd-α, L/D-α, 극곡선(Cl-Cd)."""
+    from .results import has_result
+
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
-        if r.get("state") == "done" and isinstance(r.get("cl"), float) and x_param in r:
+        if has_result(r) and x_param in r:
             label = ", ".join(f"{k}={r[k]}" for k in group_keys if k in r) or "all"
             groups[label].append(r)
     if not groups:

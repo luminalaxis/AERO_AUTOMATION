@@ -1,6 +1,7 @@
 # Fluent 베이스 케이스 만들기 (단일 익형 데이터셋, Fluent 2026 R1)
 
-`examples/airfoil_dataset`의 `aero-auto run`은 케이스마다 **베이스 케이스를 열고 → 형상 메쉬로 교체하고 → 유속·받음각·기준값을 바꿔 → 계산**합니다.
+`examples/airfoil_dataset`의 `aero-auto run`은 케이스마다 **베이스 케이스를 열고 → 형상·받음각별 메쉬로 교체하고 → 유속·기준값을 바꿔 → 계산**합니다.
+받음각은 메쉬에 들어 있습니다(익형을 앞전 기준으로 회전). 유동은 항상 수평이라 베이스 케이스에 받음각 설정은 없습니다.
 물리 모델, 경계조건, 리포트를 담은 `base_airfoil.cas.h5`를 처음 한 번만 만들면 됩니다.
 팀원 4명이 **같은 베이스 케이스 파일**을 써야 결과가 일치합니다. 한 명이 만들어 공유하세요.
 
@@ -51,7 +52,7 @@ Pressure-Based, **Steady**, 2D Space **Planar**
 
 Density **constant 1.225**, Viscosity **constant 1.7894e-05** (마하수 0.03~0.07이라 비압축으로 충분)
 
-## 5. Named Expression `speed`, `alpha`
+## 5. Named Expression `speed`
 
 콘솔에 입력합니다.
 
@@ -59,19 +60,15 @@ Density **constant 1.225**, Viscosity **constant 1.7894e-05** (마하수 0.03~0.
 /define/named-expressions/add "speed" definition "9.738 [m/s]" q
 ```
 
-```
-/define/named-expressions/add "alpha" definition "4 [deg]" q
-```
-
-확인: `/define/named-expressions/list`에 두 개가 보이면 됩니다.
-저널이 케이스마다 `speed`(Re 2×10⁵ → 9.738 m/s, 5×10⁵ → 24.35 m/s)와 `alpha`(받음각)를 바꿉니다.
+확인: `/define/named-expressions/list`에 `speed`가 보이면 됩니다.
+저널이 케이스마다 `speed`(Re 2×10⁵ → 9.738 m/s, 5×10⁵ → 24.35 m/s)를 바꿉니다. 받음각은 메쉬(익형 회전)에 들어 있어 따로 넣지 않습니다.
 
 ## 6. Boundary Conditions
 
 ### `inlet` (velocity-inlet)
 - Velocity Specification Method: **Components**
-- X-Velocity: 입력란 오른쪽 드롭다운에서 expression → `speed * cos(alpha)`
-- Y-Velocity: expression → `speed * sin(alpha)`
+- X-Velocity: 입력란 오른쪽 드롭다운에서 expression → `speed`
+- Y-Velocity: **0**
 - Turbulence: **Intensity and Viscosity Ratio**, Intensity **0.1 %**, Viscosity Ratio **10**
 
 ### `outlet` (pressure-outlet)
@@ -82,7 +79,8 @@ Density **constant 1.225**, Viscosity **constant 1.7894e-05** (마하수 0.03~0.
 - Momentum 탭: Wall Motion **Stationary Wall**, Shear Condition **Specified Shear**, Shear Stress X = **0**, Y = **0** [Pa]
 - 기본값(No Slip)으로 두면 바깥 경계를 따라 경계층이 자라서 유동이 막히므로 반드시 바꿉니다.
 - 확인: `/define/boundary-conditions/list-zones`에서 `top`, `bottom`이 wall이고, 경계 설정 창의 Shear Condition이 Specified Shear인지 봅니다.
-- 위·아래가 벽이라 받음각만큼 기울어진 유입이 위·아래 변에서 수평으로 꺾입니다. 영역 높이(`box_height`, 기본 ±20c)가 충분히 커서 익형 주변의 받음각 영향은 작지만, 파일럿 실행에서 높은 받음각의 cl을 실측값과 비교해 확인하세요.
+- 위·아래가 벽이라 수직 유속이 0이어야 하므로 유입은 항상 수평으로 둡니다. 유입을 받음각만큼 기울이면 익형에 닿기 전에 대부분 수평으로 펴져서(±20c 높이, 앞 20c 기준 지정 각도의 약 1/4만 남음) 실제 받음각이 훨씬 작아집니다. 그래서 도구가 받음각마다 익형을 앞전 기준으로 회전한 메쉬를 만듭니다.
+- 파일럿 실행에서 NACA 0012의 cl을 실측값과 비교해 확인하세요(예: 받음각 8°에서 약 0.8).
 
 ### `main` (wall)
 - Stationary Wall, No Slip (기본값)
@@ -111,7 +109,7 @@ Density **constant 1.225**, Viscosity **constant 1.7894e-05** (마하수 0.03~0.
 | `cx` | Force Coefficient | 1, 0 | main |
 | `cy` | Force Coefficient | 0, 1 | main |
 
-이름은 정확히 `cx`, `cy`여야 합니다. 도구가 받음각 α로 `cl = cy·cosα − cx·sinα`, `cd = cx·cosα + cy·sinα`를 계산하므로 받음각마다 힘 방향을 바꿀 필요가 없습니다.
+이름은 정확히 `cx`, `cy`여야 합니다. 유동이 항상 수평이라 `cl = cy`, `cd = cx`이고, 받음각마다 힘 방향을 바꿀 필요가 없습니다.
 
 기획서의 라벨 규칙대로 케이스마다 y+도 기록합니다. `Solution > Report Definitions > New > Surface Report`
 

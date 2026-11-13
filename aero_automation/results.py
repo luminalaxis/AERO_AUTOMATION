@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .cases import Case
 from .config import ProjectConfig, safe_name
-from .convergence import OSCILLATING, ConvergenceConfig, classify, coefficient_history, solver_log_info
+from .convergence import DIVERGED, OSCILLATING, ConvergenceConfig, classify, coefficient_history, solver_log_info
 from .meshing import mesh_name
 from .runner import LOG_NAME, TRANSCRIPT_NAME, read_status
 
@@ -89,7 +89,9 @@ def summarize_case(cfg: ProjectConfig, case: Case) -> dict:
     row = {"case": case.name, "group": case.group, **case.params}
     if case.mesh is not None:
         row["mesh"] = case.mesh.name
-        # 형상 이름 (받음각 제외): 지면 모드에서는 메쉬가 받음각마다 다르므로 순위·비교는 이 이름으로
+    if "main_airfoil" in case.params:
+        # 형상 이름 (받음각 제외): 지면 모드에서는 메쉬가 받음각마다 다르므로 순위·비교는 이 이름으로.
+        # [mesh]가 없는 프로젝트에서도 스크리닝 스팟 체크(check_spot)가 이 이름으로 형상을 찾는다
         row["geometry"] = mesh_name({k: v for k, v in case.params.items() if k != cfg.results.x_param})
     row["state"] = status.get("state", "pending")
     row["elapsed_min"] = round(status["elapsed_sec"] / 60, 2) if status.get("elapsed_sec") else ""
@@ -155,29 +157,47 @@ def _write_csv(path: Path, rows: list[dict]) -> Path:
 
 
 def geometry_keys(cfg: ProjectConfig, cases: list[Case]) -> list[str]:
-    """형상을 구분하는 변수: 케이스마다 값이 다른 변수 중 받음각/파생 변수를 뺀 것."""
+    """형상을 구분하는 변수: 케이스마다 값이 다른 변수 중 받음각/파생 변수를 뺀 것.
+
+    flow_angle(받음각에서 자동으로 정해지는 유입 각도)도 뺀다. 넣으면 자유류 프로젝트에서 받음각마다
+    다른 형상으로 취급돼 순위가 (형상, 받음각)마다 한 줄씩 나온다.
+    """
     keys = []
-    for k in cases[0].params:
-        if k == cfg.results.x_param or k in cfg.derived:
+    # 모든 케이스의 변수를 본다: 세트마다 변수가 다르면(예: 3단에만 있는 flap2_*) 첫 케이스에 없는 변수도
+    # 형상을 구분해야 한다. 빠뜨리면 그 변수만 다른 형상들이 순위·그래프에서 하나로 합쳐진다
+    for k in dict.fromkeys(k for c in cases for k in c.params):
+        if k in (cfg.results.x_param, "flow_angle") or k in cfg.derived:
             continue
         if len({repr(c.params.get(k)) for c in cases}) > 1:
             keys.append(k)
     return keys
 
 
+def has_result(row: dict) -> bool:
+    """순위·그래프에 쓸 수 있는 결과인지: 실행이 끝났고, cl이 유한한 값이고, 발산 판정이 아님.
+
+    Fluent가 발산 메시지 없이 끝나도 계수가 비정상적으로 크면 conv_state가 diverged가 된다. 그런 값이
+    최대 Cl로 뽑히면 그 형상이 순위 1위가 되므로 뺀다.
+    """
+    cl = row.get("cl")
+    return (row.get("state") == "done" and isinstance(cl, float) and math.isfinite(cl)
+            and row.get("conv_state") != DIVERGED)
+
+
 def rank_geometries(rows: list[dict], keys: list[str], x_param: str, objective: str,
                     split_by: list[str] = ()) -> list[dict]:
-    """형상별 최대 Cl/L/D. split_by가 있으면 그 조건(예: 속도)마다 따로 순위를 매긴다."""
+    """형상별 최대 Cl/L/D. split_by가 있으면 그 조건(예: 속도)마다 따로 순위를 매긴다.
+    발산 판정(conv_state = diverged) 케이스는 쓰지 않는다."""
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
-        if r.get("state") == "done" and isinstance(r.get("cl"), float):
+        if has_result(r):
             groups.setdefault(tuple(r.get(k) for k in keys), []).append(r)
     ranking = []
     for values, rs in groups.items():
         best_cl = max(rs, key=lambda r: r["cl"])
         entry = {**dict(zip(keys, values)), "n_aoa": len(rs),
                  "cl_max": best_cl["cl"], f"{x_param}@cl_max": best_cl.get(x_param)}
-        with_ld = [r for r in rs if isinstance(r.get("l/d"), float)]
+        with_ld = [r for r in rs if isinstance(r.get("l/d"), float) and math.isfinite(r["l/d"])]
         if with_ld:
             best_ld = max(with_ld, key=lambda r: r["l/d"])
             entry.update({"ld_max": best_ld["l/d"], f"{x_param}@ld_max": best_ld.get(x_param),
@@ -212,6 +232,10 @@ def collect(cfg: ProjectConfig, cases: list[Case], plots: bool = True) -> dict:
     from .screening import check_spot, load_selection
     selection = load_selection(cfg)
     result["warnings"] = check_spot(selection, ranking) if selection else []
+    n_diverged = sum(1 for r in rows if r.get("state") == "done" and r.get("conv_state") == DIVERGED)
+    if n_diverged:
+        result["warnings"].append(f"발산 판정(conv_state = diverged) 케이스 {n_diverged}개는 순위와 그래프에서 뺐습니다 "
+                                  f"({cfg.results.summary_file}의 conv_reason 확인).")
 
     if plots:
         from .plots import plot_convergence, plot_summary
@@ -257,7 +281,7 @@ def _screening_comparison(rows: list[dict], out_dir: Path) -> list[Path]:
     for key, label in (("cl", "Cl"), ("l/d", "L/D")):
         est_key = "cl_est" if key == "cl" else "ld_est"
         pairs = [(float(est[r["case"]][est_key]), r[key], r["case"]) for r in rows
-                 if r.get("state") == "done" and isinstance(r.get(key), float)
+                 if has_result(r) and isinstance(r.get(key), float) and math.isfinite(r[key])
                  and est.get(r["case"], {}).get(est_key) not in (None, "")]
         name = "screening_vs_cfd_cl.png" if key == "cl" else "screening_vs_cfd_ld.png"
         path = plot_screening_vs_cfd(pairs, out_dir / "plots" / name, label)

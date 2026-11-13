@@ -101,20 +101,41 @@ def build_cases(cfg: ProjectConfig) -> list[Case]:
         case_dir = cfg.output_dir / group / name if group else cfg.output_dir / name
         cases.append(Case(name=name, group=group, params=params, dir=case_dir))
 
+    _set_rotation(cases, cfg)
     _set_flow_angle(cases, cfg.results.x_param)
     if cfg.mesh is not None:
         _attach_meshes(cases, cfg)
     return cases
 
 
+def _set_rotation(cases: list[Case], cfg: ProjectConfig) -> None:
+    """직사각형 영역([mesh] farfield_shape = "box")이면 받음각을 날개 회전으로 넣는다 (rotate_aoa = true).
+
+    box는 위·아래 경계가 벽이라 수직 유속이 0이어야 한다. inlet 유입을 받음각만큼 기울이면 날개에 닿기 전에
+    대부분 수평으로 펴져서(±20c 높이, 앞 20c 기준 지정 각도의 약 1/4만 남음) 실제 받음각이 훨씬 작아진다.
+    그래서 지면 모드처럼 유동은 수평으로 두고 날개를 돌린다. 케이스 변수 rotate_aoa를 직접 주면 그 값을 쓴다
+    (원형 영역에서 켜거나, box에서 끄기).
+    """
+    if cfg.mesh is None:
+        return
+    for c in cases:
+        p = c.params
+        if "rotate_aoa" in p or "main_airfoil" not in p or p.get("ground_clearance") not in (None, ""):
+            continue
+        if p.get("farfield_shape", cfg.mesh.get("farfield_shape", "circle")) == "box" \
+                and isinstance(p.get("aoa"), (int, float)):
+            p["rotate_aoa"] = True
+
+
 def _set_flow_angle(cases: list[Case], x_param: str) -> None:
     """Fluent 유입 각도 flow_angle [deg]. 다운포스(뒤집힌) 날개는 양의 받음각이 다운포스를
     키우는 방향이 되도록 flow_angle = -aoa 로 둔다. 저널은 ${flow_angle}을 쓴다.
-    지면이 있으면 받음각은 형상 회전으로 반영하고 유동은 지면과 평행하므로 flow_angle = 0."""
+    지면이 있거나 날개를 회전하는 방식(rotate_aoa)이면 받음각은 형상 회전으로 반영하고 유동은 수평이므로
+    flow_angle = 0."""
     for c in cases:
         a = c.params.get(x_param)
         if isinstance(a, (int, float)) and "flow_angle" not in c.params:
-            if c.params.get("ground_clearance") not in (None, ""):
+            if c.params.get("ground_clearance") not in (None, "") or c.params.get("rotate_aoa"):
                 c.params["flow_angle"] = 0.0
             else:
                 c.params["flow_angle"] = -a if c.params.get("downforce") else a
@@ -178,7 +199,12 @@ def partition_cases(cases: list[Case], part: str | None) -> list[Case]:
         raise ConfigError(f"--part K/N 에서 K는 1~N 이어야 합니다: {part!r}")
 
     def unit(c: Case) -> str:
-        return c.mesh.name if c.mesh is not None else (c.group or c.name)
+        if c.mesh is None:
+            return c.group or c.name
+        if c.params.get("rotate_aoa") and c.params.get("ground_clearance") in (None, ""):
+            # 받음각마다 메쉬가 따로여도 같은 형상의 받음각 스윕은 한 사람에게
+            return mesh_name({k: v for k, v in c.params.items() if k != "aoa"})
+        return c.mesh.name
 
     units = sorted({unit(c) for c in cases})
     mine = {u for i, u in enumerate(units) if i % n == k - 1}

@@ -14,6 +14,9 @@
   - ground_clearance             : 지상고. 있으면 지면을 두고, 받음각(aoa)만큼 날개 전체를 메인 앞전 기준으로
                                    실제 회전시킨다 (유동은 지면과 평행). 양의 aoa = 다운포스(또는 양력) 증가 방향.
   - ground_ref                   : 지상고 기준. "lowest"(기본) = 날개 최하단~지면, "main_le" = 메인 앞전~지면
+  - rotate_aoa                   : true면 지면이 없어도 받음각(aoa)만큼 날개를 메인 앞전 기준으로 실제 회전시킨다
+                                   (유동은 수평, 받음각마다 메쉬). 직사각형 영역([mesh] farfield_shape = "box")은
+                                   위·아래가 벽이라 유입을 기울일 수 없으므로 자동으로 켜진다 (cases.py).
 """
 
 from __future__ import annotations
@@ -226,8 +229,9 @@ def geometry_params(params: dict) -> dict:
     """케이스 변수 중 형상(메쉬)을 결정하는 것만 추린다."""
     keys = ["main_airfoil", "main_chord", "chord", "downforce", "ground_clearance", "ground_ref"]
     keys += [f"flap{i}_{f}" for i in range(1, MAX_FLAPS + 1) for f in FLAP_FIELDS]
-    if params.get("ground_clearance") not in (None, ""):
-        keys.append("aoa")  # 지면이 있으면 받음각마다 형상(메쉬)이 다르다
+    keys.append("rotate_aoa")
+    if params.get("ground_clearance") not in (None, "") or params.get("rotate_aoa"):
+        keys.append("aoa")  # 지면이 있거나 날개를 회전하는 방식이면 받음각마다 형상(메쉬)이 다르다
     return {k: params[k] for k in keys if k in params and params[k] not in ("", None)}
 
 
@@ -288,10 +292,14 @@ def build_geometry(params: dict, root: Path) -> Geometry:
     info = dict(info)
     if params.get("ground_clearance") not in (None, ""):
         elements = _place_over_ground(elements, params, info["main_chord"], info)
+    elif params.get("rotate_aoa") and params.get("aoa") not in (None, ""):
+        aoa = float(params["aoa"])
+        elements = _rotate_about_main_le(elements, aoa, info["downforce"])[0]
+        info.update(aoa=aoa, rotated=True)
     return Geometry(list(elements), info)
 
 
-GROUND_KEYS = ("aoa", "ground_clearance", "ground_ref")
+GROUND_KEYS = ("aoa", "ground_clearance", "ground_ref", "rotate_aoa")
 _SHAPE_CACHE: dict = {}
 
 
@@ -332,10 +340,7 @@ def _build_shape(params: dict, root: Path) -> tuple[list[Element], dict]:
 def _place_over_ground(elements: list[Element], params: dict, ref: float, info: dict) -> list[Element]:
     """메인 앞전 기준으로 받음각만큼 회전하고, 지상고에 맞춰 지면 위치(info["ground_y"])를 정한다."""
     aoa = float(params.get("aoa", 0.0))
-    # 뒤집힌 날개는 반시계(앞전이 내려가는 쪽) 회전이 다운포스 증가, 똑바른 날개는 시계 회전이 양력 증가
-    ccw = aoa if info["downforce"] else -aoa
-    pivot = elements[0].xy[elements[0].le_index].copy()
-    elements = [el.transformed(angle_deg=-ccw, pivot=pivot) for el in elements]
+    elements, pivot = _rotate_about_main_le(elements, aoa, info["downforce"])
 
     h = float(params["ground_clearance"]) / ref
     lowest = min(float(el.xy[:, 1].min()) for el in elements)
@@ -356,6 +361,14 @@ def _place_over_ground(elements: list[Element], params: dict, ref: float, info: 
                 lowest_clearance=(lowest - ground_y) * ref,        # 날개 최하단~지면 (입력 단위)
                 main_le_height=(float(pivot[1]) - ground_y) * ref)  # 메인 앞전~지면 (입력 단위)
     return elements
+
+
+def _rotate_about_main_le(elements: list[Element], aoa: float, downforce: bool) -> tuple[list[Element], np.ndarray]:
+    """메인 앞전을 중심으로 받음각만큼 회전 (수평 유동 기준). (요소들, 회전 중심) 반환."""
+    # 뒤집힌 날개는 반시계(앞전이 내려가는 쪽) 회전이 다운포스 증가, 똑바른 날개는 시계 회전이 양력 증가
+    ccw = aoa if downforce else -aoa
+    pivot = elements[0].xy[elements[0].le_index].copy()
+    return [el.transformed(angle_deg=-ccw, pivot=pivot) for el in elements], pivot
 
 
 def mirror(el: Element) -> Element:

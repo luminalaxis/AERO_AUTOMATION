@@ -1,6 +1,11 @@
 import csv
 import json
+import os
+import signal
+import subprocess
+import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -116,3 +121,43 @@ def test_timeout_marks_failed(tmp_path):
     cfg = load_config(cfg_path)
     status = json.loads((build_cases(cfg)[0].dir / "status.json").read_text())
     assert status["state"] == "failed" and "시간 초과" in status["message"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="SIGINT 전달 방식이 다름 (Windows는 콘솔 Ctrl+C 이벤트)")
+def test_ctrl_c_stops_parallel_run(tmp_path):
+    """동시 실행(-j 2) 중 Ctrl+C: 실행 중인 솔버를 끝내고 남은 케이스는 시작하지 않는다.
+
+    예전에는 작업 스레드가 Ctrl+C를 받지 못해, 남은 케이스를 끝까지 다 돌린 뒤에야 멈췄다.
+    """
+    cfg_path = make_project(tmp_path, sweep="aoa = [0, 1, 2, 3]")  # 8 케이스
+    cfg_path.write_text(cfg_path.read_text().replace(
+        f'"{FAKE_SOLVER.as_posix()}", "${{journal}}"', '"-c", "import time; time.sleep(60)"'))
+    cfg = load_config(cfg_path)
+    cases = build_cases(cfg)
+
+    def states():
+        out = {}
+        for c in cases:
+            path = c.dir / "status.json"
+            if path.is_file():
+                try:
+                    out[c.name] = json.loads(path.read_text())["state"]
+                except json.JSONDecodeError:  # 쓰는 중
+                    pass
+        return out
+
+    proc = subprocess.Popen([sys.executable, "-m", "aero_automation", "-c", str(cfg_path), "run", "-j", "2"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        deadline = time.monotonic() + 30
+        while list(states().values()).count("running") < 2:
+            assert time.monotonic() < deadline and proc.poll() is None, "케이스가 시작되지 않음"
+            time.sleep(0.1)
+        proc.send_signal(signal.SIGINT)
+        out, _ = proc.communicate(timeout=30)  # 솔버(60초)를 기다리지 않고 바로 끝나야 함
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 130 and "중단되었습니다" in out
+    final = states()
+    assert sorted(final.values()) == ["interrupted", "interrupted"]  # 나머지 6개는 시작하지 않음

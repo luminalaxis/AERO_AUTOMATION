@@ -157,6 +157,52 @@ def test_check_spot_warns_when_pruned_geometry_wins():
     assert check_spot(selection, ranking) == []
 
 
+def test_check_spot_with_single_valued_condition():
+    # 조건 변수 값이 하나뿐이면(속도 하나, 세트 하나) 형상 구분 변수가 아니라서 순위 행에 그 열이 없다.
+    # 없는 열을 "다르다"로 보면 스팟 체크 형상이 더 좋아도 경고가 나오지 않는다.
+    selection = {"metric": "cl_max_est",
+                 "spot_check": [{"geometry": "geoB", "condition": {"case_set": "2el", "v": 60}, "cases": ["b_a4"]}]}
+    ranking = [{"geometry": "geoA", "cl_max": 1.0}, {"geometry": "geoB", "cl_max": 2.0}]
+    (w,) = check_spot(selection, ranking)
+    assert "geoB" in w
+    ranking[1]["cl_max"] = 0.5
+    assert check_spot(selection, ranking) == []
+
+
+def test_spot_check_warning_end_to_end_single_speed(tmp_path):
+    """속도가 하나뿐이고 [mesh]가 없는 프로젝트에서도 collect가 스팟 체크 경고를 낸다."""
+    from aero_automation.results import collect
+    from aero_automation.screening import load_selection
+
+    cfg_path = make_project(tmp_path)
+    text = cfg_path.read_text()
+    text = text.replace('mach = 0.15\n', 'mach = 0.15\nspeed_kmh = 60\n')
+    text = text.replace('objective = "max_ld"', 'objective = "max_cl"\nsplit_by = ["speed_kmh"]')
+    cfg_path.write_text(text)
+    cfg = load_config(cfg_path)
+    cases = build_cases(cfg)
+    screen(cfg, cases, log=lambda *_: None)
+    selection = load_selection(cfg)
+    spot = {n for s in selection["spot_check"] for n in s["cases"]}
+    assert spot and selection["spot_check"][0]["condition"] == {"speed_kmh": 60}
+
+    def finish(cl_spot: float):  # 남은 케이스가 모두 끝난 것처럼 결과를 써 둔다
+        for c in cases:
+            if c.name in selection["pruned"]:
+                continue
+            c.dir.mkdir(parents=True, exist_ok=True)
+            cl = cl_spot if c.name in spot else 1.0
+            (c.dir / "coef-rfile.out").write_text(f'"r"\n("Iteration" "cl" "cd")\n1 {cl} 0.01\n2 {cl} 0.01\n')
+            (c.dir / "status.json").write_text(json.dumps({"state": "done"}))
+
+    finish(cl_spot=9.0)
+    r = collect(cfg, cases, plots=False)
+    assert "speed_kmh" not in r["top"][0]  # 값이 하나라 순위 열에 없음
+    assert len(r["warnings"]) == len(selection["spot_check"]) and "스팟 체크" in r["warnings"][0]
+    finish(cl_spot=0.5)
+    assert collect(cfg, cases, plots=False)["warnings"] == []
+
+
 def test_screen_per_speed(tmp_path):
     """속도별로 Re/Mach가 달라지고, 선별/그래프가 속도마다 따로 만들어진다."""
     cfg_path = make_project(tmp_path)

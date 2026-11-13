@@ -101,8 +101,28 @@ def test_mesh_worker_uses_fresh_process_per_mesh():
     from aero_automation.meshing import MeshWorker
 
     with MeshWorker() as w:
-        pids = [w._get_pool().apply(os.getpid) for _ in range(2)]
+        pids = [w._call(os.getpid, (), "pid", None) for _ in range(2)]
     assert pids[0] != pids[1] and os.getpid() not in pids
+
+
+def test_mesh_worker_reports_crashed_process():
+    # gmsh가 세그폴트 등으로 프로세스째 죽으면 시간 제한(기본 300초)을 기다리지 않고 바로 그 형상만 실패 처리한다.
+    # (multiprocessing.Pool은 작업 프로세스가 죽어도 알려 주지 않아 결과를 끝없이 기다렸다)
+    import os
+    import time
+
+    from aero_automation.config import ConfigError
+    from aero_automation.meshing import MeshWorker, MeshWorkerError
+
+    start = time.monotonic()
+    with MeshWorker() as w:
+        with pytest.raises(ConfigError, match="비정상 종료.*종료 코드 3"):
+            w._call(os._exit, (3,), "crash", 300)
+        # 작업 프로세스 안의 일반 오류는 내용이 그대로 전달되고, 그 뒤에도 같은 worker를 계속 쓸 수 있다
+        with pytest.raises(MeshWorkerError, match="ZeroDivisionError"):
+            w._call(divmod, (1, 0), "error", 300)
+        assert w._call(divmod, (7, 2), "ok", 300) == (3, 1)
+    assert time.monotonic() - start < 60
 
 
 def test_unassigned_boundary_rejected(tmp_path):
